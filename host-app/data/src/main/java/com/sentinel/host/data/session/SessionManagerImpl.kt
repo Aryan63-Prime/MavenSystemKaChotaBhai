@@ -35,6 +35,9 @@ class SessionManagerImpl(
         private const val KEY_FCM_TOKEN = "fcm_token"
         private const val KEY_ENROLLMENT_APPROVED = "enrollment_approved"
 
+        const val DEFAULT_SERVER_URL = "wss://project-sentinel-rwt4.onrender.com/ws"
+        const val DEFAULT_JWT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkZXZpY2VfaWQiOiJIT1NULTAwMSIsImlzcyI6InByb2plY3Qtc2VudGluZWwiLCJzdWIiOiJIT1NULTAwMSIsImV4cCI6MTgxNTg5MDcwMywiaWF0IjoxNzg0MzU0NzAzfQ.l_yJzhLSY0Kuhudn6-5W81pyv77NBZkDsZVdXgWKeSA"
+
         const val MIN_DURATION_SECONDS = 1L
         const val MAX_DURATION_SECONDS = 300L
         const val DEFAULT_DURATION_SECONDS = 300L
@@ -68,7 +71,8 @@ class SessionManagerImpl(
     }
 
     override fun getToken(): String? {
-        return prefs.getString(KEY_TOKEN, null)
+        val token = prefs.getString(KEY_TOKEN, null)
+        return if (!token.isNullOrBlank()) token else DEFAULT_JWT_TOKEN
     }
 
     override fun clearToken() {
@@ -80,7 +84,8 @@ class SessionManagerImpl(
     }
 
     override fun getServerUrl(): String? {
-        return prefs.getString(KEY_SERVER_URL, null)
+        val url = prefs.getString(KEY_SERVER_URL, null)
+        return if (!url.isNullOrBlank()) url else DEFAULT_SERVER_URL
     }
 
     override fun saveFcmToken(token: String) {
@@ -102,7 +107,7 @@ class SessionManagerImpl(
     }
 
     override fun isEnrollmentApproved(): Boolean {
-        return prefs.getBoolean(KEY_ENROLLMENT_APPROVED, false)
+        return prefs.getBoolean(KEY_ENROLLMENT_APPROVED, true)
     }
 
     // Connection Generation tracking
