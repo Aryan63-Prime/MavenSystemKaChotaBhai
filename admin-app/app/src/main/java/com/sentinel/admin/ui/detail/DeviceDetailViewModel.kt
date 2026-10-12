@@ -339,8 +339,10 @@ class DeviceDetailViewModel @Inject constructor(
     fun onListenClick() {
         val target = audioTargetDeviceId
         val streamId = java.util.UUID.randomUUID()
+        // Send LISTEN with the streamId so the host starts streaming with exactly this UUID.
+        // Do NOT send START_AUDIO_STREAM separately — it would make the host generate a new
+        // random UUID, causing a streamId mismatch and dropping all AUDIO_V2 frames on the server.
         audioRepository.listen(target, streamId)
-        sendCommand("START_AUDIO_STREAM")
         audioMonitor.start(target, streamId)
     }
 
@@ -350,8 +352,8 @@ class DeviceDetailViewModel @Inject constructor(
         }
         val target = audioTargetDeviceId
         val currentStream = audioMonitor.activeStreamId
+        // Send STOP (not STOP_AUDIO_STREAM command) so the host releases the mic cleanly.
         audioRepository.stopListening(target, currentStream)
-        sendCommand("STOP_AUDIO_STREAM")
         audioMonitor.stop()
     }
 
