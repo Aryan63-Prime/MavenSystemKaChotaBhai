@@ -7,4 +7,5 @@ package com.sentinel.shared.protocol
 object PacketType {
     const val AUDIO: Byte = 0x01
     const val FILE_CHUNK: Byte = 0x02
+    const val AUDIO_V2: Byte = 0x03
 }

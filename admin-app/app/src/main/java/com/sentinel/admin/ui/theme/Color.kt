@@ -42,6 +42,19 @@ val LightOnError = Color(0xFFFFFFFF)
 val StatusOnline = Color(0xFF54C6A2)
 val StatusOffline = Color(0xFF7D8997)           // Slate Muted
 val StatusAlert = Color(0xFFF43F5E)             // Crimson Alert
-val StatusWarning = Color(0xFFF59E0B)           // Amber Warning
+val StatusWarning = Color(0xFFE09F3E)           // Amber / Attention
 val StatusListening = Color(0xFFAAC7E8)
-val StatusCardBorder = Color(0x1FFFFFFF)        // 12% subtle translucent white border
+val StatusCardBorder = Color(0xFF293542)
+
+// Figma Tokens
+val FigmaScreenBackground = Color(0xFF0B0F14)
+val FigmaCardSurface = Color(0xFF151B22)
+val FigmaCardBorder = Color(0xFF293542)
+val FigmaButtonSurface = Color(0xFF202A35)
+val FigmaTabSelected = Color(0xFF1C2631)
+val FigmaTextPrimary = Color(0xFFF0F2F4)
+val FigmaTextMuted = Color(0xFF9AA7B6)
+val FigmaAccentBlue = Color(0xFFAAC7E8)
+val FigmaAccentGreen = Color(0xFF54C6A2)
+val FigmaAccentAmber = Color(0xFFE09F3E)
+val FigmaAccentCoral = Color(0xFFF43F5E)

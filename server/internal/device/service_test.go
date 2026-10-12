@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/xaiop/project-sentinel/server/internal/protocol"
+	"github.com/xaiop/project-sentinel/server/internal/repository"
 )
 
 func TestValidateRegistrationAcceptsMatchingDeviceID(t *testing.T) {
@@ -108,5 +109,30 @@ func TestValidateRegistrationRejectsAlreadyRegisteredDevice(t *testing.T) {
 	}, "HOST-0001", true)
 	if !errors.Is(err, ErrAlreadyRegistered) {
 		t.Fatalf("expected ErrAlreadyRegistered, got %v", err)
+	}
+}
+
+func TestEnrollDeviceStoresMetadata(t *testing.T) {
+	repo := repository.NewMemoryDeviceRepository()
+	service := NewServiceWithRepository(repo)
+
+	msg := protocol.RegisterMessage{
+		DeviceID:   "HOST-0001",
+		DeviceName: "Pixel 9",
+		AppVersion: "1.0.0",
+		Model:      "Google Pixel",
+	}
+
+	if err := service.EnrollDevice(t.Context(), msg); err != nil {
+		t.Fatalf("EnrollDevice failed: %v", err)
+	}
+
+	dev, err := repo.GetEnrolledDevice(t.Context(), "HOST-0001")
+	if err != nil {
+		t.Fatalf("GetEnrolledDevice failed: %v", err)
+	}
+
+	if dev.DeviceName != "Pixel 9" || dev.Model != "Google Pixel" {
+		t.Fatalf("Unexpected enrolled device data: %+v", dev)
 	}
 }

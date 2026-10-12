@@ -1,5 +1,7 @@
 package com.sentinel.admin.domain.repository
 
+import java.util.UUID
+
 /**
  * Controls audio monitoring for a selected device.
  *
@@ -8,8 +10,8 @@ package com.sentinel.admin.domain.repository
  */
 interface AudioRepository {
     /** Sends LISTEN command for the given device. */
-    fun listen(deviceId: String): Boolean
+    fun listen(deviceId: String, streamId: UUID? = null): Boolean
 
     /** Sends STOP command for the given device. */
-    fun stopListening(deviceId: String): Boolean
+    fun stopListening(deviceId: String, streamId: UUID? = null): Boolean
 }

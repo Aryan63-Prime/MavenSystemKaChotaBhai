@@ -636,4 +636,227 @@ class DeviceRepositoryImplLiveUpdateTest {
         val staleEntry = repo.devices.value["HOST-001"]
         assertTrue(staleEntry == null || staleEntry.uniqueKey == updatedVivo?.uniqueKey)
     }
+    private fun emitTelemetry(id: String, model: String, battery: Int, extra: String = "") {
+        eventsFlow.tryEmit(ConnectionEvent.CommandResultReceived("""
+            {"type":"COMMAND_RESULT","version":1,"timestamp":12345,"sequence":0,
+             "data":{"command":"TELEMETRY_REPORT","success":true,
+             "payload":{"deviceId":"$id","model":"$model","battery":$battery $extra}}}
+        """.trimIndent()))
+    }
+
+    @Test
+    fun `same model phones keep separate callsigns and telemetry`() = scope.runTest {
+        emitConnected("HOST-001-VIVO-AAAA", model = "I2401", sequence = 1)
+        emitConnected("HOST-001-VIVO-BBBB", model = "I2401", sequence = 1)
+        advanceUntilIdle()
+        val first = repo.devices.value["HOST-001-VIVO-AAAA"]!!
+        val second = repo.devices.value["HOST-001-VIVO-BBBB"]!!
+        assertTrue(first.callsign != second.callsign)
+        emitTelemetry(first.deviceId, "I2401", 91)
+        emitTelemetry(second.deviceId, "I2401", 42)
+        advanceUntilIdle()
+        assertEquals(91, repo.devices.value[first.deviceId]!!.latestLocation!!.battery)
+        assertEquals(42, repo.devices.value[second.deviceId]!!.latestLocation!!.battery)
+    }
+
+    @Test
+    fun `unknown permanent identity never updates another phone of same model`() = scope.runTest {
+        emitConnected("HOST-001-VIVO-AAAA", model = "I2401", sequence = 1)
+        advanceUntilIdle()
+        emitTelemetry("HOST-001-VIVO-BBBB", "I2401", 42)
+        advanceUntilIdle()
+        assertEquals(null, repo.devices.value["HOST-001-VIVO-AAAA"]!!.latestLocation)
+        assertEquals(42, repo.devices.value["HOST-001-VIVO-BBBB"]!!.latestLocation!!.battery)
+    }
+
+    @Test
+    fun `ambiguous generic telemetry cannot choose a same model phone`() = scope.runTest {
+        emitConnected("HOST-001-VIVO-AAAA", model = "I2401", sequence = 1)
+        emitConnected("HOST-001-VIVO-BBBB", model = "I2401", sequence = 1)
+        advanceUntilIdle()
+        emitTelemetry("HOST-001", "I2401", 88)
+        advanceUntilIdle()
+        assertEquals(null, repo.devices.value["HOST-001-VIVO-AAAA"]!!.latestLocation)
+        assertEquals(null, repo.devices.value["HOST-001-VIVO-BBBB"]!!.latestLocation)
+    }
+
+    @Test
+    fun `legacy devices do not share sequence ordering or metadata`() = scope.runTest {
+        emitConnected("HOST-001", "Samsung", sequence = 100, model = "SM-S928B")
+        emitConnected("HOST-001", "Vivo", sequence = 1, model = "I2401")
+        advanceUntilIdle()
+        assertEquals("Samsung", repo.devices.value["HOST-001_SM-S928B"]!!.deviceName)
+        assertEquals("Vivo", repo.devices.value["HOST-001_I2401"]!!.deviceName)
+        assertEquals(0, repo.eventStatistics.value.stale.toInt())
+    }
+
+    @Test
+    fun `dedicated telemetry accepts genuine 0,0 Gulf of Guinea fix and sets hasReportedFix true`() = scope.runTest {
+        emitConnected("HOST-001-VIVO-2D2C", model = "I2401", sequence = 1)
+        advanceUntilIdle()
+
+        val telemetry = """
+            {
+                "type": "COMMAND_RESULT",
+                "version": 1,
+                "timestamp": 12345,
+                "sequence": 2,
+                "data": {
+                    "command": "TELEMETRY_REPORT",
+                    "success": true,
+                    "payload": {
+                        "deviceId": "HOST-001-VIVO-2D2C",
+                        "model": "I2401",
+                        "battery": 88,
+                        "network": "5G",
+                        "latitude": 0.0,
+                        "longitude": 0.0,
+                        "accuracy": 4.5,
+                        "timestamp": "2026-10-12T04:15:00Z"
+                    }
+                }
+            }
+        """.trimIndent()
+        eventsFlow.tryEmit(ConnectionEvent.CommandResultReceived(telemetry))
+        advanceUntilIdle()
+
+        val loc = repo.devices.value["HOST-001-VIVO-2D2C"]?.latestLocation
+        assertNotNull(loc)
+        assertTrue("Genuine 0,0 fix must set hasReportedFix true", loc!!.hasReportedFix)
+        assertEquals(0.0, loc.latitude, 0.00001)
+        assertEquals(0.0, loc.longitude, 0.00001)
+        assertEquals("2026-10-12T04:15:00Z", loc.recordedAt)
+    }
+
+    @Test
+    fun `dedicated telemetry parses numeric epoch timestamp`() = scope.runTest {
+        emitConnected("HOST-001-VIVO-2D2C", model = "I2401", sequence = 1)
+        advanceUntilIdle()
+
+        val telemetry = """
+            {
+                "type": "COMMAND_RESULT",
+                "version": 1,
+                "timestamp": 12345,
+                "sequence": 2,
+                "data": {
+                    "command": "TELEMETRY_REPORT",
+                    "success": true,
+                    "payload": {
+                        "deviceId": "HOST-001-VIVO-2D2C",
+                        "model": "I2401",
+                        "battery": 90,
+                        "network": "LTE",
+                        "latitude": 28.5,
+                        "longitude": 77.2,
+                        "accuracy": 5.0,
+                        "timestamp": 1728419020000
+                    }
+                }
+            }
+        """.trimIndent()
+        eventsFlow.tryEmit(ConnectionEvent.CommandResultReceived(telemetry))
+        advanceUntilIdle()
+
+        val loc = repo.devices.value["HOST-001-VIVO-2D2C"]?.latestLocation
+        assertNotNull(loc)
+        assertTrue(loc!!.hasReportedFix)
+        assertTrue("Numeric timestamp must be converted to ISO string", loc.recordedAt.contains("T") && loc.recordedAt.endsWith("Z"))
+    }
+
+    @Test
+    fun `sample time is decoupled from receipt time using advancing receipt clock`() = scope.runTest {
+        var currentInstant = java.time.Instant.parse("2026-10-12T10:00:00Z")
+        val fakeClock = object : java.time.Clock() {
+            override fun getZone(): java.time.ZoneId = java.time.ZoneId.of("UTC")
+            override fun withZone(zone: java.time.ZoneId?): java.time.Clock = this
+            override fun instant(): java.time.Instant = currentInstant
+        }
+
+        val clockRepo = DeviceRepositoryImpl(
+            deviceApi = stubDeviceApi,
+            authRepository = object : com.sentinel.admin.domain.repository.AuthRepository {
+                override fun getToken(): String? = "test-token"
+                override fun saveToken(token: String) {}
+                override fun clearToken() {}
+            },
+            connectionRepository = object : ConnectionRepository {
+                override val events: SharedFlow<ConnectionEvent> = eventsFlow
+                override val state: StateFlow<ConnectionState> = MutableStateFlow(ConnectionState.Disconnected)
+                override suspend fun connect(url: String) {}
+                override suspend fun disconnect() {}
+                override fun sendText(message: String): Boolean = true
+                override fun sendBinary(data: ByteArray): Boolean = true
+            },
+            eventMapper = DeviceUpdateEventMapper(),
+            moshi = moshi,
+            scope = scope.backgroundScope,
+            receiptClock = fakeClock
+        )
+
+        // Initial connection
+        emitConnected("HOST-001-VIVO-2D2C", model = "I2401", sequence = 1)
+        advanceUntilIdle()
+
+        // First fix at T0 with sample time T - 5m
+        eventsFlow.tryEmit(ConnectionEvent.CommandResultReceived("""
+            {
+                "type": "COMMAND_RESULT",
+                "version": 1,
+                "timestamp": 12345,
+                "sequence": 2,
+                "data": {
+                    "command": "TELEMETRY_REPORT",
+                    "success": true,
+                    "payload": {
+                        "deviceId": "HOST-001-VIVO-2D2C",
+                        "model": "I2401",
+                        "battery": 80,
+                        "latitude": 28.5,
+                        "longitude": 77.2,
+                        "accuracy": 5.0,
+                        "timestamp": "2026-10-12T09:55:00Z"
+                    }
+                }
+            }
+        """.trimIndent()))
+        advanceUntilIdle()
+
+        val loc1 = clockRepo.devices.value["HOST-001-VIVO-2D2C"]?.latestLocation
+        assertNotNull(loc1)
+        assertEquals("2026-10-12T09:55:00Z", loc1?.recordedAt)
+        assertEquals("2026-10-12T10:00:00Z", loc1?.receivedAt)
+
+        // Advance clock by 30 seconds
+        currentInstant = java.time.Instant.parse("2026-10-12T10:00:30Z")
+
+        // Second fix with new sample time
+        eventsFlow.tryEmit(ConnectionEvent.CommandResultReceived("""
+            {
+                "type": "COMMAND_RESULT",
+                "version": 1,
+                "timestamp": 12345,
+                "sequence": 3,
+                "data": {
+                    "command": "TELEMETRY_REPORT",
+                    "success": true,
+                    "payload": {
+                        "deviceId": "HOST-001-VIVO-2D2C",
+                        "model": "I2401",
+                        "battery": 79,
+                        "latitude": 28.501,
+                        "longitude": 77.201,
+                        "accuracy": 4.0,
+                        "timestamp": "2026-10-12T10:00:25Z"
+                    }
+                }
+            }
+        """.trimIndent()))
+        advanceUntilIdle()
+
+        val loc2 = clockRepo.devices.value["HOST-001-VIVO-2D2C"]?.latestLocation
+        assertNotNull(loc2)
+        assertEquals("2026-10-12T10:00:25Z", loc2?.recordedAt)
+        assertEquals("2026-10-12T10:00:30Z", loc2?.receivedAt)
+    }
 }

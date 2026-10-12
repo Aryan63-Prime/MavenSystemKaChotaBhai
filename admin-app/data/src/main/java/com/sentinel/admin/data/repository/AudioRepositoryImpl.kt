@@ -18,15 +18,15 @@ class AudioRepositoryImpl @Inject constructor(
     private val sequenceGenerator: SequenceGenerator
 ) : AudioRepository {
 
-    override fun listen(deviceId: String): Boolean {
+    override fun listen(deviceId: String, streamId: java.util.UUID?): Boolean {
         val sequence = sequenceGenerator.next()
-        val message = messageSerializer.serializeListen(deviceId, sequence)
+        val message = messageSerializer.serializeListen(deviceId, sequence, streamId?.toString(), audioVersion = 2)
         return connectionRepository.sendText(message)
     }
 
-    override fun stopListening(deviceId: String): Boolean {
+    override fun stopListening(deviceId: String, streamId: java.util.UUID?): Boolean {
         val sequence = sequenceGenerator.next()
-        val message = messageSerializer.serializeStop(deviceId, sequence)
+        val message = messageSerializer.serializeStop(deviceId, sequence, streamId?.toString())
         return connectionRepository.sendText(message)
     }
 }

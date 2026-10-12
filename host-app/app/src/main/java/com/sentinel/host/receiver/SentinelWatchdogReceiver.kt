@@ -26,11 +26,18 @@ class SentinelWatchdogReceiver : BroadcastReceiver() {
         const val ACTION_WATCHDOG_TICK = "com.sentinel.host.action.WATCHDOG_TICK"
         private const val WATCHDOG_REQUEST_CODE = 4001
         private const val WATCHDOG_INTERVAL_MS = 10 * 60 * 1000L // 10 minutes
+        var sessionManagerProvider: ((Context) -> com.sentinel.host.domain.session.SessionManager)? = null
 
         /**
          * Schedules or advances the next exact-while-idle alarm.
          */
         fun scheduleNext(context: Context, delayMs: Long = WATCHDOG_INTERVAL_MS) {
+            val sessionManager = sessionManagerProvider?.invoke(context) ?: com.sentinel.host.data.session.SessionManagerImpl(context)
+            if (!sessionManager.isEnrollmentApproved()) {
+                Log.w(TAG, "Watchdog alarm scheduling skipped: On-device host approval not granted")
+                return
+            }
+
             try {
                 val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
                 val intent = Intent(context, SentinelWatchdogReceiver::class.java).apply {
@@ -82,6 +89,12 @@ class SentinelWatchdogReceiver : BroadcastReceiver() {
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
+        val sessionManager = sessionManagerProvider?.invoke(context) ?: com.sentinel.host.data.session.SessionManagerImpl(context)
+        if (!sessionManager.isEnrollmentApproved()) {
+            Log.w(TAG, "Watchdog alarm skipped: On-device host approval not granted")
+            return
+        }
+
         Log.i(TAG, "Watchdog alarm triggered (action=${intent?.action})")
 
         val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager

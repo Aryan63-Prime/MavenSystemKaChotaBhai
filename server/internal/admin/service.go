@@ -70,12 +70,20 @@ type FcmWaker interface {
 	WakeDevice(ctx context.Context, deviceID string) (string, error)
 }
 
+// EnrolledDeviceSource provides durable access to enrolled devices across server restarts.
+type EnrolledDeviceSource interface {
+	ListEnrolledDevices(ctx context.Context) ([]repository.EnrolledDevice, error)
+	GetEnrolledDevice(ctx context.Context, deviceID string) (*repository.EnrolledDevice, error)
+	GetBatteryHistory(ctx context.Context, deviceID string, limit int) ([]repository.BatteryHistoryEntry, error)
+}
+
 // Service builds admin-facing device views from live sessions and Redis state.
 type Service struct {
 	sessions  SessionSource
 	locations LocationReader
 	heartbeat HeartbeatPolicy
 	fcm       FcmWaker
+	enrolled  EnrolledDeviceSource
 }
 
 // NewService creates an admin API service.
@@ -92,6 +100,19 @@ func (s *Service) SetFcmService(f FcmWaker) {
 	s.fcm = f
 }
 
+// SetEnrolledDeviceSource binds the durable enrolled device source to the admin service.
+func (s *Service) SetEnrolledDeviceSource(e EnrolledDeviceSource) {
+	s.enrolled = e
+}
+
+// GetBatteryHistory returns historical battery and thermal telemetry for a device.
+func (s *Service) GetBatteryHistory(ctx context.Context, deviceID string, limit int) ([]repository.BatteryHistoryEntry, error) {
+	if s.enrolled == nil {
+		return []repository.BatteryHistoryEntry{}, nil
+	}
+	return s.enrolled.GetBatteryHistory(ctx, deviceID, limit)
+}
+
 // WakeDevice sends a high-priority FCM wakeup ping to the device.
 func (s *Service) WakeDevice(ctx context.Context, deviceID string) (string, error) {
 	if s.fcm == nil {
@@ -102,17 +123,18 @@ func (s *Service) WakeDevice(ctx context.Context, deviceID string) (string, erro
 
 // ListDevices returns connected devices with their realtime state.
 func (s *Service) ListDevices(ctx context.Context) ([]Device, error) {
-	if s.sessions == nil {
+	if s.sessions == nil && s.enrolled == nil {
 		return []Device{}, nil
 	}
 
-	snapshots := s.sessions.ListSessions()
 	deviceMap := make(map[string]Device)
 
-	for _, snapshot := range snapshots {
-		if strings.TrimSpace(snapshot.DeviceID) == "" || !snapshot.Registered {
-			continue
-		}
+	if s.sessions != nil {
+		snapshots := s.sessions.ListSessions()
+		for _, snapshot := range snapshots {
+			if strings.TrimSpace(snapshot.DeviceID) == "" || !snapshot.Registered {
+				continue
+			}
 
 		device, err := s.deviceFromSnapshot(ctx, snapshot)
 		if err != nil {
@@ -135,6 +157,44 @@ func (s *Service) ListDevices(ctx context.Context) ([]Device, error) {
 			deviceMap[mapKey] = device
 		}
 	}
+	}
+
+	// Merge enrolled devices from durable storage that are currently offline
+	if s.enrolled != nil {
+		enrolledList, err := s.enrolled.ListEnrolledDevices(ctx)
+		if err == nil {
+			for _, dev := range enrolledList {
+				mapKey := dev.DeviceID
+				if dev.Model != "" {
+					mapKey = dev.DeviceID + "_" + dev.Model
+				}
+				if _, ok := deviceMap[mapKey]; !ok {
+					// Check if any active session matches deviceID prefix
+					hasActive := false
+					for _, activeDev := range deviceMap {
+						if activeDev.DeviceID == dev.DeviceID {
+							hasActive = true
+							break
+						}
+					}
+					if !hasActive {
+						deviceMap[mapKey] = Device{
+							DeviceID:          dev.DeviceID,
+							DeviceName:        dev.DeviceName,
+							AppVersion:        dev.AppVersion,
+							Model:             dev.Model,
+							Authenticated:     true,
+							Registered:        true,
+							RegistrationState: registrationStateRegistered,
+							HeartbeatStatus:   heartbeatStatusStale, // offline/stale
+							ConnectedAt:       dev.LastSeen,
+							LastHeartbeat:     dev.LastSeen,
+						}
+					}
+				}
+			}
+		}
+	}
 
 	devices := make([]Device, 0, len(deviceMap))
 	for _, device := range deviceMap {
@@ -151,21 +211,37 @@ func (s *Service) GetDevice(ctx context.Context, deviceID string) (Device, bool,
 		return Device{}, false, ErrMissingDeviceID
 	}
 
-	if s.sessions == nil {
-		return Device{}, false, nil
+	if s.sessions != nil {
+		snapshot, ok := s.sessions.GetSessionByDeviceID(deviceID)
+		if ok {
+			device, err := s.deviceFromSnapshot(ctx, snapshot)
+			if err != nil {
+				return Device{}, false, err
+			}
+			return device, true, nil
+		}
 	}
 
-	snapshot, ok := s.sessions.GetSessionByDeviceID(deviceID)
-	if !ok {
-		return Device{}, false, nil
+	// Fallback to durable enrolled storage if currently offline/disconnected
+	if s.enrolled != nil {
+		dev, err := s.enrolled.GetEnrolledDevice(ctx, deviceID)
+		if err == nil && dev != nil {
+			return Device{
+				DeviceID:          dev.DeviceID,
+				DeviceName:        dev.DeviceName,
+				AppVersion:        dev.AppVersion,
+				Model:             dev.Model,
+				Authenticated:     true,
+				Registered:        true,
+				RegistrationState: registrationStateRegistered,
+				HeartbeatStatus:   heartbeatStatusStale,
+				ConnectedAt:       dev.LastSeen,
+				LastHeartbeat:     dev.LastSeen,
+			}, true, nil
+		}
 	}
 
-	device, err := s.deviceFromSnapshot(ctx, snapshot)
-	if err != nil {
-		return Device{}, false, err
-	}
-
-	return device, true, nil
+	return Device{}, false, nil
 }
 
 func (s *Service) deviceFromSnapshot(ctx context.Context, snapshot SessionSnapshot) (Device, error) {
@@ -190,24 +266,6 @@ func (s *Service) deviceFromSnapshot(ctx context.Context, snapshot SessionSnapsh
 	location, found, err := s.locations.GetLatest(ctx, snapshot.DeviceID)
 	if err != nil {
 		return Device{}, fmt.Errorf("get latest location: %w", err)
-	}
-	if !found && strings.HasPrefix(snapshot.DeviceID, "HOST-001-") {
-		suffix := strings.TrimPrefix(snapshot.DeviceID, "HOST-001-")
-		location, found, _ = s.locations.GetLatest(ctx, "HOST-"+suffix)
-		if !found {
-			location, found, _ = s.locations.GetLatest(ctx, "HOST-001")
-		}
-	}
-	if !found && strings.Contains(snapshot.DeviceID, "_") {
-		base := strings.SplitN(snapshot.DeviceID, "_", 2)[0]
-		location, found, _ = s.locations.GetLatest(ctx, base)
-		if !found && strings.HasPrefix(base, "HOST-001-") {
-			suffix := strings.TrimPrefix(base, "HOST-001-")
-			location, found, _ = s.locations.GetLatest(ctx, "HOST-"+suffix)
-			if !found {
-				location, found, _ = s.locations.GetLatest(ctx, "HOST-001")
-			}
-		}
 	}
 	if found {
 		device.LatestLocation = &location

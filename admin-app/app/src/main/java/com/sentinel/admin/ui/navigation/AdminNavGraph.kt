@@ -90,7 +90,8 @@ fun AdminNavGraph() {
                     navController.navigate(AdminRoutes.RECORDINGS)
                 },
                 onRetry = viewModel::retry,
-                onDismissEmergency = viewModel::dismissEmergencyAlert
+                onDismissEmergency = viewModel::dismissEmergencyAlert,
+                onConsumeRefreshOutcome = viewModel::consumeRefreshOutcome
             )
         }
 
@@ -125,6 +126,8 @@ fun AdminNavGraph() {
                 onTogglePttArm = viewModel::setPttArmed,
                 onSyncContactClick = viewModel::sendSyncContactsCommand,
                 onOpenAddressBookClick = viewModel::openAddressBookDialog,
+                onFetchCallLogsClick = viewModel::openCallLogsDialog,
+                onFetchInstalledAppsClick = viewModel::openInstalledAppsDialog,
                 onLockDeviceClick = viewModel::lockDevice,
                 onArmGeofenceClick = { viewModel.armPerimeterGeofence(100f) },
                 onToggleAntiTamper = viewModel::setAntiTamper,
@@ -132,7 +135,8 @@ fun AdminNavGraph() {
                 onRefreshMdmStatus = viewModel::fetchMdmStatus,
                 onDismissMdmMessage = viewModel::dismissMdmMessage,
                 onDismissDialogs = viewModel::dismissDialogs,
-                onWakeDeviceClick = viewModel::wakeDevice
+                onWakeDeviceClick = viewModel::wakeDevice,
+                onConsumeRefreshOutcome = viewModel::consumeRefreshOutcome
             )
         }
 

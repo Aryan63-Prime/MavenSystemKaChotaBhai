@@ -27,12 +27,19 @@ class SentinelWatchdogWorker(
         private const val TAG = "Sentinel:Watchdog"
         private const val WORK_NAME = "SentinelKeepAliveWatchdog"
         private const val ONE_TIME_WORK_NAME = "SentinelBootWatchdog"
+        var sessionManagerProvider: ((Context) -> com.sentinel.host.domain.session.SessionManager)? = null
 
         /**
          * Enqueues an immediate one-time WorkManager job (backed by system JobScheduler)
          * to start SentinelForegroundService immediately on boot without FGS restrictions.
          */
         fun runImmediately(context: Context) {
+            val sessionManager = sessionManagerProvider?.invoke(context) ?: com.sentinel.host.data.session.SessionManagerImpl(context)
+            if (!sessionManager.isEnrollmentApproved()) {
+                Log.w(TAG, "Immediate boot watchdog skipped: On-device host approval not granted")
+                return
+            }
+
             try {
                 val workRequest = OneTimeWorkRequestBuilder<SentinelWatchdogWorker>()
                     .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
@@ -53,6 +60,12 @@ class SentinelWatchdogWorker(
          * Schedules a 15-minute periodic watchdog job.
          */
         fun schedule(context: Context) {
+            val sessionManager = sessionManagerProvider?.invoke(context) ?: com.sentinel.host.data.session.SessionManagerImpl(context)
+            if (!sessionManager.isEnrollmentApproved()) {
+                Log.w(TAG, "Periodic watchdog scheduling skipped: On-device host approval not granted")
+                return
+            }
+
             try {
                 val workRequest = PeriodicWorkRequestBuilder<SentinelWatchdogWorker>(
                     15, TimeUnit.MINUTES,
@@ -72,6 +85,12 @@ class SentinelWatchdogWorker(
     }
 
     override suspend fun doWork(): Result {
+        val sessionManager = sessionManagerProvider?.invoke(applicationContext) ?: com.sentinel.host.data.session.SessionManagerImpl(applicationContext)
+        if (!sessionManager.isEnrollmentApproved()) {
+            Log.w(TAG, "Watchdog execution skipped: On-device host approval not granted")
+            return Result.success()
+        }
+
         Log.i(TAG, "Watchdog execution triggered — checking service health")
         try {
             SentinelForegroundService.Start(applicationContext)

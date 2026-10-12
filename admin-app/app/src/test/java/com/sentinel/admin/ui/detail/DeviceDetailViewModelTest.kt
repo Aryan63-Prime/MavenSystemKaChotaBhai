@@ -78,6 +78,11 @@ class DeviceDetailViewModelTest {
             return deviceResult
         }
 
+        override suspend fun fetchFreshDevice(deviceId: String): Result<Device> {
+            getDeviceCallCount++
+            return deviceResult
+        }
+
         override suspend fun getDevices(): Result<List<Device>> {
             return devicesResult
         }
@@ -87,12 +92,12 @@ class DeviceDetailViewModelTest {
         var listenCalls = mutableListOf<String>()
         var stopCalls = mutableListOf<String>()
 
-        override fun listen(deviceId: String): Boolean {
+        override fun listen(deviceId: String, streamId: java.util.UUID?): Boolean {
             listenCalls.add(deviceId)
             return true
         }
 
-        override fun stopListening(deviceId: String): Boolean {
+        override fun stopListening(deviceId: String, streamId: java.util.UUID?): Boolean {
             stopCalls.add(deviceId)
             return true
         }
@@ -311,6 +316,52 @@ class DeviceDetailViewModelTest {
         viewModel.refresh()
         testDispatcher.scheduler.advanceUntilIdle()
         assertNull(viewModel.uiState.value.errorMessage)
+    }
+
+    @Test
+    fun `refresh transitions through Running to Success and scoped settling`() = runTest(testDispatcher) {
+        fakeRepo.deviceResult = Result.success(TEST_DEVICE)
+        val viewModel = createViewModel()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.refresh()
+        val op = viewModel.uiState.value.refreshOperation
+        assertTrue("refreshOperation should be Running", op is com.sentinel.admin.ui.common.RefreshOperation.Running)
+        val attemptId = op.attemptId
+        assertNotNull(attemptId)
+
+        // Concurrent duplicate refresh call while Running is rejected by synchronous guard
+        viewModel.refresh()
+        assertEquals("Duplicate call must not mutate attempt ID", attemptId, viewModel.uiState.value.refreshOperation.attemptId)
+
+        // Advance dispatcher until repository call completes
+        testDispatcher.scheduler.runCurrent()
+        val successOp = viewModel.uiState.value.refreshOperation
+        assertTrue("refreshOperation should be Success", successOp is com.sentinel.admin.ui.common.RefreshOperation.Success)
+        assertEquals(attemptId, successOp.attemptId)
+
+        // After settling time (1800ms), state transitions to Idle
+        testDispatcher.scheduler.advanceTimeBy(1900)
+        assertTrue("refreshOperation should be Idle after settling", viewModel.uiState.value.refreshOperation is com.sentinel.admin.ui.common.RefreshOperation.Idle)
+    }
+
+    @Test
+    fun `consumeRefreshOutcome immediately resets outcome if attempt ID matches`() = runTest(testDispatcher) {
+        fakeRepo.deviceResult = Result.success(TEST_DEVICE)
+        val viewModel = createViewModel()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.refresh()
+        testDispatcher.scheduler.runCurrent()
+        val attemptId = viewModel.uiState.value.refreshOperation.attemptId!!
+
+        // Consuming mismatched attempt ID is ignored
+        viewModel.consumeRefreshOutcome(attemptId + 999)
+        assertTrue(viewModel.uiState.value.refreshOperation is com.sentinel.admin.ui.common.RefreshOperation.Success)
+
+        // Consuming matching attempt ID resets to Idle immediately
+        viewModel.consumeRefreshOutcome(attemptId)
+        assertTrue(viewModel.uiState.value.refreshOperation is com.sentinel.admin.ui.common.RefreshOperation.Idle)
     }
 
     // ============================================================

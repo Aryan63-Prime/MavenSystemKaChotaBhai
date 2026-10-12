@@ -35,7 +35,8 @@ sealed interface DeviceUpdateEvent {
         val accuracy: Double? = null,
         val battery: Int? = null,
         val network: String? = null,
-        val model: String? = null
+        val model: String? = null,
+        val timestamp: String? = null
     ) : DeviceUpdateEvent
 
     data class BatteryUpdated(

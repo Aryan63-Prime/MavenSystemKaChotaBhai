@@ -13,28 +13,6 @@ class SentinelAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: SentinelAccessibilityService? = null
             private set
-
-        /**
-         * Launches the 1ms trampoline activity utilizing the AccessibilityService's
-         * system Background Activity Launch (BAL) exemption.
-         */
-        fun launchTrampoline(context: android.content.Context) {
-            try {
-                val launchContext = instance ?: context
-                val intent = android.content.Intent().apply {
-                    setClassName(context.packageName, "com.sentinel.host.ui.SentinelTrampolineActivity")
-                    addFlags(
-                        android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
-                        android.content.Intent.FLAG_ACTIVITY_NO_ANIMATION or
-                        android.content.Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
-                    )
-                }
-                launchContext.startActivity(intent)
-                Log.i(TAG, "Trampoline activity launched via BAL exemption")
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to launch trampoline: ${e.message}")
-            }
-        }
     }
 
     override fun onServiceConnected() {

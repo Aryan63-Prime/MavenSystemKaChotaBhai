@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,6 +202,7 @@ func newTestDispatcher(secret string, now func() time.Time) *Dispatcher {
 
 func authenticatedSession() *testSession {
 	return &testSession{
+		registered:    true,
 		authenticated: true,
 		deviceID:      "HOST-0001",
 	}
@@ -211,6 +214,7 @@ func authRequest(t *testing.T, secret string, deviceID string) []byte {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.Claims{
 		DeviceID: deviceID,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "project-sentinel",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 		},
 	})
@@ -290,7 +294,7 @@ func (s *testSession) SetAuthenticated(deviceID string) {
 }
 
 func (s *testSession) IsAdmin() bool {
-	return false
+	return auth.IsAdminIdentity(s.deviceID)
 }
 
 func (s *testSession) IsAuthenticated() bool {
@@ -335,7 +339,7 @@ func TestDispatchListenRequiresAuthentication(t *testing.T) {
 
 func TestDispatchListenAuthenticated(t *testing.T) {
 	dispatcher := newTestDispatcher("test_secret", time.Now)
-	session := authenticatedSession()
+	session := &testSession{authenticated: true, deviceID: "ADMIN-0001"}
 
 	result := dispatcher.Dispatch(context.Background(), session, envelope(t, protocol.TypeListen, 5, protocol.ListenMessage{DeviceID: "HOST-0001"}))
 
@@ -346,7 +350,7 @@ func TestDispatchListenAuthenticated(t *testing.T) {
 
 func TestDispatchStopAuthenticated(t *testing.T) {
 	dispatcher := newTestDispatcher("test_secret", time.Now)
-	session := authenticatedSession()
+	session := &testSession{authenticated: true, deviceID: "ADMIN-0001"}
 
 	result := dispatcher.Dispatch(context.Background(), session, envelope(t, protocol.TypeStop, 6, protocol.StopMessage{DeviceID: "HOST-0001"}))
 
@@ -554,3 +558,128 @@ func TestDispatchEmergencySOSBroadcastsDeviceID(t *testing.T) {
 	}
 }
 
+func TestHostCannotIssuePrivilegedRequests(t *testing.T) {
+	d := newTestDispatcher("test_secret", time.Now)
+	for _, registered := range []bool{false, true} {
+		s := &testSession{authenticated: true, deviceID: "HOST-0001", registered: registered}
+		for _, kind := range []protocol.MessageType{protocol.TypeListen, protocol.TypeStop, protocol.TypeCommand, protocol.TypeFilesListReq, protocol.TypeFileDownloadReq, protocol.TypeFileChunkAck, protocol.TypeFileStopReq} {
+			result := d.Dispatch(context.Background(), s, envelope(t, kind, 1, map[string]any{}))
+			assertErrorResponse(t, result.Message, 403)
+		}
+	}
+}
+
+func TestUnregisteredHostCannotPublishResults(t *testing.T) {
+	d := newTestDispatcher("test_secret", time.Now)
+	s := &testSession{authenticated: true, deviceID: "HOST-0001"}
+	for _, kind := range []protocol.MessageType{protocol.TypeCommandResult, protocol.TypeFilesListRes, protocol.TypeFileDownloadRes, protocol.TypeLocation, protocol.TypeEmergencySOS} {
+		assertErrorResponse(t, d.Dispatch(context.Background(), s, envelope(t, kind, 1, map[string]any{})).Message, 403)
+	}
+}
+
+func TestAdminCannotRegisterAsHostOrPublishHostData(t *testing.T) {
+	d := newTestDispatcher("test_secret", time.Now)
+	s := &testSession{authenticated: true, deviceID: "ADMIN-0001"}
+	for _, kind := range []protocol.MessageType{protocol.TypeRegister, protocol.TypeCommandResult, protocol.TypeLocation} {
+		assertErrorResponse(t, d.Dispatch(context.Background(), s, envelope(t, kind, 1, map[string]any{})).Message, 403)
+	}
+}
+
+func TestAuthenticatedSessionCannotChangePrincipal(t *testing.T) {
+	d := newTestDispatcher("test_secret", time.Now)
+	s := authenticatedSession()
+	assertErrorResponse(t, d.Dispatch(context.Background(), s, authRequest(t, "test_secret", "ADMIN-0001")).Message, 409)
+}
+
+type mockCountingFcmRegistrar struct {
+	mu         sync.Mutex
+	callCount  int
+	lastDevice string
+	lastToken  string
+	err        error
+}
+
+func (m *mockCountingFcmRegistrar) RegisterToken(ctx context.Context, deviceID, fcmToken string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount++
+	m.lastDevice = deviceID
+	m.lastToken = fcmToken
+	return m.err
+}
+
+func TestDispatchRegister_PersistenceExactlyOnce(t *testing.T) {
+	dispatcher := newTestDispatcher("test_secret", time.Now)
+	registrar := &mockCountingFcmRegistrar{}
+	dispatcher.SetFcmRegistrar(registrar)
+	broadcaster := &testBroadcaster{}
+	dispatcher.SetBroadcaster(broadcaster)
+
+	session := &testSession{
+		authenticated: true,
+		deviceID:      "HOST-0001",
+	}
+
+	payload := protocol.RegisterMessage{
+		DeviceID:   "HOST-0001",
+		DeviceName: "Pixel 9",
+		AppVersion: "1.0.0",
+		Model:      "Pixel",
+		FcmToken:   "fcm-sample-token",
+	}
+	raw := envelope(t, protocol.TypeRegister, 1, payload)
+
+	result := dispatcher.Dispatch(context.Background(), session, raw)
+
+	if result.Message == nil || result.Message.Type != protocol.TypeRegisterAck {
+		t.Fatalf("expected TypeRegisterAck, got %#v", result.Message)
+	}
+
+	if !session.registered {
+		t.Fatal("session must be marked registered")
+	}
+
+	if registrar.callCount != 1 {
+		t.Fatalf("expected token persistence to be invoked exactly once, got %d calls", registrar.callCount)
+	}
+
+	if len(broadcaster.broadcasts) != 1 {
+		t.Fatalf("expected 1 broadcasted event, got %d", len(broadcaster.broadcasts))
+	}
+}
+
+func TestDispatchRegister_PersistenceFailureLeavesSessionUnregisteredAndEmitsNeitherAckNorEvent(t *testing.T) {
+	dispatcher := newTestDispatcher("test_secret", time.Now)
+	registrar := &mockCountingFcmRegistrar{err: errors.New("fcm db write failed")}
+	dispatcher.SetFcmRegistrar(registrar)
+	broadcaster := &testBroadcaster{}
+	dispatcher.SetBroadcaster(broadcaster)
+
+	session := &testSession{
+		authenticated: true,
+		deviceID:      "HOST-0001",
+	}
+
+	payload := protocol.RegisterMessage{
+		DeviceID:   "HOST-0001",
+		DeviceName: "Pixel 9",
+		AppVersion: "1.0.0",
+		Model:      "Pixel",
+		FcmToken:   "fcm-sample-token",
+	}
+	raw := envelope(t, protocol.TypeRegister, 1, payload)
+
+	result := dispatcher.Dispatch(context.Background(), session, raw)
+
+	if result.Message == nil || result.Message.Type != protocol.TypeError {
+		t.Fatalf("expected TypeError response when persistence fails, got %#v", result.Message)
+	}
+
+	if session.registered {
+		t.Fatal("session must not be marked registered when FCM token persistence fails")
+	}
+
+	if len(broadcaster.broadcasts) != 0 {
+		t.Fatalf("expected 0 broadcasted events on failure, got %d", len(broadcaster.broadcasts))
+	}
+}

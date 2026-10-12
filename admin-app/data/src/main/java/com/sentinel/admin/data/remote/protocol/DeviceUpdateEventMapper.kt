@@ -65,7 +65,8 @@ class DeviceUpdateEventMapper {
                     accuracy = data.accuracy,
                     battery = data.battery,
                     network = data.network,
-                    model = data.model
+                    model = data.model,
+                    timestamp = data.timestamp
                 )
             }
 

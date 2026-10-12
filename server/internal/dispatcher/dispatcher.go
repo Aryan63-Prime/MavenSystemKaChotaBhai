@@ -54,7 +54,7 @@ type Dispatcher struct {
 }
 
 type FcmRegistrar interface {
-	RegisterToken(deviceID, fcmToken string)
+	RegisterToken(ctx context.Context, deviceID, fcmToken string) error
 }
 
 func New(
@@ -93,6 +93,9 @@ func (d *Dispatcher) SetCommandHandler(h *command.Handler) {
 // SetFcmRegistrar configures the FCM token registrar.
 func (d *Dispatcher) SetFcmRegistrar(r FcmRegistrar) {
 	d.fcm = r
+	if d.device != nil {
+		d.device.SetFcmRegistrar(r)
+	}
 }
 
 func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte) Result {
@@ -105,6 +108,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte)
 	}
 
 	if message.Type == protocol.TypeAuth {
+		if session.IsAuthenticated() {
+			return Result{Message: protocol.NewError(message.Sequence, 409, "Already authenticated")}
+		}
 		return d.dispatchAuthenticated(ctx, session, message)
 	}
 
@@ -114,28 +120,41 @@ func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte)
 		}
 	}
 
+	// Authorization is centralized before dispatching any privileged operation.
+	switch message.Type {
+	case protocol.TypeListen, protocol.TypeStop, protocol.TypeCommand,
+		protocol.TypeFilesListReq, protocol.TypeFileDownloadReq,
+		protocol.TypeFileChunkAck, protocol.TypeFileStopReq:
+		if !session.IsAdmin() {
+			return Result{Message: protocol.NewError(message.Sequence, 403, "Admin identity required")}
+		}
+	case protocol.TypeRegister:
+		if session.IsAdmin() {
+			return Result{Message: protocol.NewError(message.Sequence, 403, "Hosts only")}
+		}
+	case protocol.TypeLocation, protocol.TypeEmergencySOS, protocol.TypeCommandResult,
+		protocol.TypeFilesListRes, protocol.TypeFileDownloadRes:
+		if session.IsAdmin() || !session.IsRegistered() {
+			return Result{Message: protocol.NewError(message.Sequence, 403, "Registered host required")}
+		}
+	}
+
 	switch message.Type {
 	case protocol.TypeRegister:
 		response, err := d.device.Handle(ctx, session, message)
-		result := d.dispatchWithErrors(response, err, message.Sequence)
-		if err == nil {
-			var reg protocol.RegisterMessage
-			_ = message.DecodeData(&reg)
-			if d.fcm != nil && reg.FcmToken != "" {
-				d.fcm.RegisterToken(reg.DeviceID, reg.FcmToken)
-				if reg.Model != "" {
-					d.fcm.RegisterToken(reg.DeviceID+"_"+reg.Model, reg.FcmToken)
-				}
-			}
-			d.broadcastDeviceUpdate(protocol.DeviceUpdateMessage{
-				Event:      protocol.EventConnected,
-				DeviceID:   reg.DeviceID,
-				DeviceName: strPtr(reg.DeviceName),
-				AppVersion: strPtr(reg.AppVersion),
-				Model:      strPtr(reg.Model),
-			})
+		if err != nil {
+			return d.dispatchWithErrors(response, err, message.Sequence)
 		}
-		return result
+		var reg protocol.RegisterMessage
+		_ = message.DecodeData(&reg)
+		d.broadcastDeviceUpdate(protocol.DeviceUpdateMessage{
+			Event:      protocol.EventConnected,
+			DeviceID:   reg.DeviceID,
+			DeviceName: strPtr(reg.DeviceName),
+			AppVersion: strPtr(reg.AppVersion),
+			Model:      strPtr(reg.Model),
+		})
+		return Result{Message: response}
 
 	case protocol.TypeHeartbeat:
 		response, err := d.heartbeat.Handle(ctx, session, message)
@@ -307,7 +326,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte)
 
 // DispatchBinary routes a binary audio frame or file chunk to the correct handler.
 func (d *Dispatcher) DispatchBinary(ctx context.Context, session Session, data []byte) error {
-	if !session.IsAuthenticated() {
+	if !session.IsAuthenticated() || !session.IsRegistered() || session.IsAdmin() {
 		return nil
 	}
 
@@ -323,7 +342,7 @@ func (d *Dispatcher) DispatchBinary(ctx context.Context, session Session, data [
 	}
 
 	switch packetType {
-	case 0x01: // Audio
+	case 0x01, 0x03: // Audio (0x01 = V1, 0x03 = AUDIO_V2)
 		if d.audio == nil {
 			return nil
 		}

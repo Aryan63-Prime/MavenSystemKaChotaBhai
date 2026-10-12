@@ -116,6 +116,13 @@ class AudioRepositoryImplTest {
     }
 
     @Test
+    fun `startCapture with streamId starts pipeline`() {
+        val testStreamId = java.util.UUID.randomUUID()
+        repository.startCapture(testStreamId)
+        assertTrue(pipeline.isRunning)
+    }
+
+    @Test
     fun `stopCapture stops pipeline`() {
         repository.startCapture()
         repository.stopCapture()

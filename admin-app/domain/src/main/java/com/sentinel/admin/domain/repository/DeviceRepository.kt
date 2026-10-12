@@ -16,8 +16,11 @@ interface DeviceRepository {
     /** Fetches all connected devices via REST. */
     suspend fun getDevices(): Result<List<Device>>
 
-    /** Fetches a single device by ID via REST. */
+    /** Fetches a single device by ID via REST. May fall back to cached data on error for offline display. */
     suspend fun getDevice(deviceId: String): Result<Device>
+
+    /** Fetches a single device strictly from the server without cached fallback on failure. Used for truthful refresh. */
+    suspend fun fetchFreshDevice(deviceId: String): Result<Device>
 
     /** Live device map, merging REST snapshot + WebSocket incremental updates. */
     val devices: StateFlow<Map<String, Device>>

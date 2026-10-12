@@ -73,10 +73,16 @@ object ServiceModule {
         locationRepository: LocationRepository,
         motionDetector: MotionDetector,
         ramBuffer: RamTelemetryBuffer,
+        deadReckoningEngine: com.sentinel.host.data.location.DeadReckoningEngine,
         @ApplicationScope scope: CoroutineScope
     ): LocationStreamer {
         return LocationStreamer(
-            locationProvider, locationRepository, scope, motionDetector, ramBuffer
+            locationProvider = locationProvider,
+            locationRepository = locationRepository,
+            scope = scope,
+            motionDetector = motionDetector,
+            ramBuffer = ramBuffer,
+            deadReckoningEngine = deadReckoningEngine
         )
     }
 
@@ -103,10 +109,11 @@ object ServiceModule {
     fun provideAudioStreamer(
         audioRepository: AudioRepositoryImpl,
         pipeline: AudioPipeline,
+        sessionManager: SessionManager,
         @ApplicationScope scope: CoroutineScope,
         @ApplicationContext context: Context
     ): AudioStreamer {
-        return AudioStreamer(audioRepository, pipeline, scope, context)
+        return AudioStreamer(audioRepository, pipeline, scope, context, sessionManager = sessionManager)
     }
 
     @Provides

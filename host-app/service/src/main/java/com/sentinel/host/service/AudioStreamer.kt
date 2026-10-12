@@ -1,5 +1,6 @@
 package com.sentinel.host.service
 
+import android.os.SystemClock
 import android.util.Log
 import com.sentinel.host.data.audio.AudioPipeline
 import com.sentinel.host.data.repository.AudioRepositoryImpl
@@ -9,6 +10,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import com.sentinel.host.domain.session.CaptureOperation
+import com.sentinel.host.domain.session.SessionManager
+import java.util.UUID
 
 /**
  * Orchestrates audio streaming tied to the connection lifecycle.
@@ -35,11 +39,14 @@ open class AudioStreamer(
     private val audioRepository: AudioRepositoryImpl,
     private val pipeline: AudioPipeline,
     private val scope: CoroutineScope,
-    private val context: android.content.Context? = null
+    private val context: android.content.Context? = null,
+    private val clock: () -> Long = { SystemClock.elapsedRealtime() },
+    private val sessionManager: SessionManager? = null
 ) {
 
     companion object {
         private const val TAG = "Sentinel:AudioStream"
+        val NIL_UUID = UUID(0L, 0L)
     }
 
     private var collectJob: Job? = null
@@ -60,20 +67,27 @@ open class AudioStreamer(
             android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
             android.media.AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> {
                 Log.w(TAG, "Audio focus lost transiently (call/alarm) — pausing audio capture gracefully")
-                isInterruptedByCall = true
-                pauseCaptureOnly()
+                synchronized(lifecycleLock) {
+                    if (isStreaming) {
+                        isInterruptedByCall = true
+                        pauseCaptureOnly()
+                    }
+                }
             }
             android.media.AudioManager.AUDIOFOCUS_GAIN -> {
                 Log.i(TAG, "Audio focus regained — resuming audio capture")
-                if (isInterruptedByCall) {
-                    isInterruptedByCall = false
-                    resumeCaptureOnly()
+                synchronized(lifecycleLock) {
+                    if (isInterruptedByCall) {
+                        handleAudioFocusGain()
+                    }
                 }
             }
             android.media.AudioManager.AUDIOFOCUS_LOSS -> {
                 Log.w(TAG, "Audio focus lost permanently — stopping audio stream")
-                isInterruptedByCall = false
-                stop()
+                synchronized(lifecycleLock) {
+                    isInterruptedByCall = false
+                    stop()
+                }
             }
         }
     }
@@ -82,6 +96,22 @@ open class AudioStreamer(
     val defaultMaxDurationSeconds: Long = 300L
 
     private var timeoutJob: Job? = null
+
+    /** Monotonic deadline timestamp in elapsedRealtime milliseconds. */
+    private var sessionDeadlineRealtimeMs: Long = 0L
+
+    /** Monotonic generation counter to prevent delayed watchdogs from terminating newer sessions. */
+    private var sessionGeneration: Long = 0L
+
+    /** The active stream UUID for tagging frames in AUDIO_V2. */
+    @Volatile
+    var activeStreamId: UUID? = null
+        private set
+
+    /** Whether audio streaming is currently paused during reconnection. */
+    @Volatile
+    var isPaused: Boolean = false
+        private set
 
     /** Callbacks invoked when audio streaming session starts, stops, or times out. */
     var onSessionStarted: (() -> Unit)? = null
@@ -92,7 +122,13 @@ open class AudioStreamer(
     @Volatile
     var hasPermission: Boolean = false
 
-    private val lifecycleLock = Any()
+    internal val lifecycleLock = Any()
+
+    /** Test hook invoked by watchdog coroutines immediately before acquiring [lifecycleLock]. */
+    internal var onWatchdogAboutToAcquireLock: (() -> Unit)? = null
+
+    /** Test hook invoked by watchdog coroutines immediately after releasing [lifecycleLock] upon completion. */
+    internal var onWatchdogFinished: (() -> Unit)? = null
 
     /** Whether audio is currently being captured and streamed. */
     val isStreaming: Boolean get() = collectJob?.isActive == true && pipeline.isRunning
@@ -100,62 +136,104 @@ open class AudioStreamer(
     /**
      * Starts audio capture and begins streaming frames.
      * No-op if [hasPermission] is false.
-     * If already streaming, extends the session timeout without tearing down the pipeline.
-     * Automatically stops and releases mic if [maxDurationSeconds] expires.
+     * If already streaming, preserves the existing deadline without resetting the timer.
+     * Automatically stops and releases mic when session deadline expires.
      */
-    fun start(maxDurationSeconds: Long = defaultMaxDurationSeconds): Unit = synchronized(lifecycleLock) {
+    fun start(
+        maxDurationSeconds: Long = defaultMaxDurationSeconds,
+        streamId: UUID? = null
+    ): Unit = synchronized(lifecycleLock) {
         if (!hasPermission) {
             Log.w(TAG, "No RECORD_AUDIO permission — skipping start")
             return
         }
 
-        if (isStreaming) {
-            Log.i(TAG, "Audio streaming already active — extending session timeout")
-            if (maxDurationSeconds > 0) {
-                timeoutJob?.cancel()
-                timeoutJob = scope.launch {
-                    kotlinx.coroutines.delay(maxDurationSeconds * 1000L)
-                    Log.i(TAG, "Audio session reached maximum duration ($maxDurationSeconds s) — auto-stopping mic")
-                    stop()
-                    onSessionTimeout?.invoke()
-                }
+        if (sessionManager != null) {
+            if (streamId == null || streamId == NIL_UUID) {
+                Log.w(TAG, "Rejecting start audio: Missing or nil stream UUID")
+                return
             }
+            if (!sessionManager.isCapturePermitted(streamId, CaptureOperation.AUDIO_STREAM)) {
+                Log.w(TAG, "Rejecting start audio: Permit not granted for stream $streamId")
+                return
+            }
+        } else if (streamId == NIL_UUID) {
+            Log.w(TAG, "Rejecting start audio: Nil stream UUID")
             return
         }
 
-        stopInternal() // Prevent lingering state
+        if (isStreaming) {
+            Log.i(TAG, "Audio streaming already active — preserving existing deadline")
+            return
+        }
+
+        stopInternal(preserveDeadline = false) // Prevent lingering state
+        isPaused = false
 
         requestAudioFocus()
         isInterruptedByCall = false
 
-        audioRepository.startCapture()
+        val assignedStreamId = streamId ?: UUID.randomUUID()
+        activeStreamId = assignedStreamId
+
+        // Strictly clamp duration: never allow zero or negative durations to bypass the watchdog
+        val durationSec = if (maxDurationSeconds <= 0L) {
+            defaultMaxDurationSeconds
+        } else {
+            maxDurationSeconds.coerceIn(1L, 300L)
+        }
+        sessionDeadlineRealtimeMs = clock() + (durationSec * 1000L)
+        val currentGen = ++sessionGeneration
+
+        audioRepository.startCapture(assignedStreamId)
 
         collectJob = pipeline.frames
             .onEach { frame -> audioRepository.sendFrame(frame) }
             .launchIn(scope)
 
-        if (maxDurationSeconds > 0) {
-            timeoutJob?.cancel()
-            timeoutJob = scope.launch {
-                kotlinx.coroutines.delay(maxDurationSeconds * 1000L)
-                Log.i(TAG, "Audio session reached maximum duration ($maxDurationSeconds s) — auto-stopping mic")
-                stop()
-                onSessionTimeout?.invoke()
+        timeoutJob?.cancel()
+        timeoutJob = scope.launch {
+            val remainingMs = sessionDeadlineRealtimeMs - clock()
+            if (remainingMs > 0) {
+                delay(remainingMs)
             }
+            onWatchdogAboutToAcquireLock?.invoke()
+            synchronized(lifecycleLock) {
+                if ((isStreaming || isInterruptedByCall) && sessionGeneration == currentGen) {
+                    Log.i(TAG, "Audio session (gen=$currentGen, streamId=$assignedStreamId) reached maximum duration ($durationSec s) — auto-stopping mic")
+                    isInterruptedByCall = false
+                    stop()
+                    onSessionTimeout?.invoke()
+                }
+            }
+            onWatchdogFinished?.invoke()
         }
 
         onSessionStarted?.invoke()
-        Log.i(TAG, "Audio streaming started (maxDuration=${maxDurationSeconds}s)")
+        Log.i(TAG, "Audio streaming started (gen=$currentGen, streamId=$assignedStreamId, maxDuration=${durationSec}s)")
     }
 
     /**
      * Stops audio capture and streaming, releases hardware resources.
      */
-    fun stop(): Unit = synchronized(lifecycleLock) {
-        stopInternal()
+    fun stop(streamId: UUID? = null): Unit = synchronized(lifecycleLock) {
+        if (streamId != null && activeStreamId != null && streamId != activeStreamId) {
+            Log.w(TAG, "Ignoring stop request for mismatched streamId $streamId (active is $activeStreamId)")
+            return
+        }
+        val targetStreamId = streamId ?: activeStreamId
+        isPaused = false
+        stopInternal(preserveDeadline = false)
+        sessionManager?.invalidateOnStop(targetStreamId)
     }
 
-    private fun stopInternal() {
+    private fun stopInternal(preserveDeadline: Boolean = false) {
+        if (!preserveDeadline) {
+            sessionDeadlineRealtimeMs = 0L
+            isPaused = false
+            activeStreamId = null
+        }
+        sessionGeneration++ // Invalidate any waiting watchdog coroutines
         timeoutJob?.cancel()
         timeoutJob = null
         abandonAudioFocus()
@@ -169,22 +247,21 @@ open class AudioStreamer(
 
     /**
      * Pauses audio during reconnect.
-     * Releases hardware resources during connection loss.
+     * Releases hardware resources during connection loss while preserving session deadline.
      */
     fun pause(): Unit = synchronized(lifecycleLock) {
-        timeoutJob?.cancel()
-        timeoutJob = null
-        abandonAudioFocus()
-        collectJob?.cancel()
-        collectJob = null
-        audioRepository.stopCapture()
-        onSessionStopped?.invoke()
+        if (!isStreaming) {
+            Log.w(TAG, "Cannot pause — not currently streaming")
+            return
+        }
+        isPaused = true
+        stopInternal(preserveDeadline = true)
         Log.i(TAG, "Audio streaming paused (reconnecting)")
     }
 
     /**
      * Resumes audio after reconnect.
-     * Same as [start] but semantically different for logging.
+     * Verifies valid paused session and remaining deadline, restoring watchdog.
      */
     fun resume(): Unit = synchronized(lifecycleLock) {
         if (!hasPermission) {
@@ -192,18 +269,81 @@ open class AudioStreamer(
             return
         }
 
-        stopInternal() // Clean up lingering state
+        if (!isPaused) {
+            Log.w(TAG, "Cannot resume audio streaming — no paused session active")
+            return
+        }
+
+        val streamId = activeStreamId
+        if (sessionManager != null) {
+            if (streamId == null || streamId == NIL_UUID || !sessionManager.isCapturePermitted(streamId, CaptureOperation.AUDIO_STREAM)) {
+                Log.w(TAG, "Cannot resume audio streaming — permit invalid or expired for stream $streamId")
+                stop()
+                return
+            }
+        } else if (streamId == NIL_UUID) {
+            Log.w(TAG, "Cannot resume audio streaming — nil active stream ID")
+            stop()
+            return
+        }
+
+        if (sessionDeadlineRealtimeMs <= 0L) {
+            Log.w(TAG, "Cannot resume audio streaming — no active session deadline")
+            isPaused = false
+            return
+        }
+
+        val remainingMs = sessionDeadlineRealtimeMs - clock()
+        if (remainingMs <= 0L) {
+            Log.w(TAG, "Cannot resume audio streaming — session deadline already expired")
+            stop()
+            return
+        }
+
+        isPaused = false
+        stopInternal(preserveDeadline = true) // Clean up lingering state
 
         requestAudioFocus()
         isInterruptedByCall = false
 
-        audioRepository.startCapture()
+        val resumeGen = ++sessionGeneration
+
+        audioRepository.startCapture(activeStreamId)
 
         collectJob = pipeline.frames
             .onEach { frame -> audioRepository.sendFrame(frame) }
             .launchIn(scope)
 
-        Log.i(TAG, "Audio streaming resumed")
+        // CRITICAL: Recompute remaining duration from the unchanged absolute deadline
+        // AFTER cleanup and capture startup, immediately before scheduling the watchdog.
+        // Time spent restarting capture must NOT extend the original deadline!
+        val remainingAfterStartupMs = sessionDeadlineRealtimeMs - clock()
+        if (remainingAfterStartupMs <= 0L) {
+            Log.i(TAG, "Resumed audio session deadline reached during startup — auto-stopping mic")
+            stop()
+            onSessionTimeout?.invoke()
+            return
+        }
+
+        timeoutJob?.cancel()
+        timeoutJob = scope.launch {
+            val remainingWatchdogMs = sessionDeadlineRealtimeMs - clock()
+            if (remainingWatchdogMs > 0) {
+                delay(remainingWatchdogMs)
+            }
+            onWatchdogAboutToAcquireLock?.invoke()
+            synchronized(lifecycleLock) {
+                if ((isStreaming || isInterruptedByCall) && sessionGeneration == resumeGen) {
+                    Log.i(TAG, "Resumed audio session (gen=$resumeGen) expired — auto-stopping mic")
+                    isInterruptedByCall = false
+                    stop()
+                    onSessionTimeout?.invoke()
+                }
+            }
+            onWatchdogFinished?.invoke()
+        }
+
+        Log.i(TAG, "Audio streaming resumed (gen=$resumeGen, remaining=${remainingAfterStartupMs}ms)")
     }
 
     private fun pauseCaptureOnly() {
@@ -212,13 +352,80 @@ open class AudioStreamer(
         audioRepository.stopCapture()
     }
 
-    private fun resumeCaptureOnly() {
-        if (!hasPermission) return
+    private fun handleAudioFocusGain() {
+        if (!hasPermission) {
+            isInterruptedByCall = false
+            return
+        }
+
+        val streamId = activeStreamId
+        if (sessionManager != null) {
+            if (streamId == null || streamId == NIL_UUID || !sessionManager.isCapturePermitted(streamId, CaptureOperation.AUDIO_STREAM)) {
+                Log.i(TAG, "Audio focus regained, but permit invalid or expired for stream $streamId — stopping session")
+                isInterruptedByCall = false
+                stop()
+                return
+            }
+        } else if (streamId == NIL_UUID) {
+            Log.i(TAG, "Audio focus regained, but nil active stream ID — stopping session")
+            isInterruptedByCall = false
+            stop()
+            return
+        }
+
+        // Verify monotonic deadline before restarting capture
+        val remainingMs = if (sessionDeadlineRealtimeMs > 0L) {
+            sessionDeadlineRealtimeMs - clock()
+        } else {
+            0L
+        }
+
+        if (remainingMs <= 0L) {
+            Log.i(TAG, "Audio focus regained, but session deadline already expired — stopping session")
+            isInterruptedByCall = false
+            stop()
+            onSessionTimeout?.invoke()
+            return
+        }
+
+        isInterruptedByCall = false
+        val resumeGen = ++sessionGeneration
+
         pauseCaptureOnly()
-        audioRepository.startCapture()
+        audioRepository.startCapture(activeStreamId)
         collectJob = pipeline.frames
             .onEach { frame -> audioRepository.sendFrame(frame) }
             .launchIn(scope)
+
+        // CRITICAL: Recompute remaining duration from the unchanged absolute deadline
+        // AFTER cleanup and capture startup, immediately before scheduling the watchdog.
+        val remainingAfterStartupMs = sessionDeadlineRealtimeMs - clock()
+        if (remainingAfterStartupMs <= 0L) {
+            Log.i(TAG, "Audio session deadline reached during focus recovery startup — stopping session")
+            stop()
+            onSessionTimeout?.invoke()
+            return
+        }
+
+        timeoutJob?.cancel()
+        timeoutJob = scope.launch {
+            val remainingWatchdogMs = sessionDeadlineRealtimeMs - clock()
+            if (remainingWatchdogMs > 0) {
+                delay(remainingWatchdogMs)
+            }
+            onWatchdogAboutToAcquireLock?.invoke()
+            synchronized(lifecycleLock) {
+                if ((isStreaming || isInterruptedByCall) && sessionGeneration == resumeGen) {
+                    Log.i(TAG, "Resumed audio session after focus gain (gen=$resumeGen) expired — auto-stopping mic")
+                    isInterruptedByCall = false
+                    stop()
+                    onSessionTimeout?.invoke()
+                }
+            }
+            onWatchdogFinished?.invoke()
+        }
+
+        Log.i(TAG, "Audio streaming resumed after focus gain (gen=$resumeGen, remaining=${remainingAfterStartupMs}ms)")
     }
 
     private fun requestAudioFocus() {

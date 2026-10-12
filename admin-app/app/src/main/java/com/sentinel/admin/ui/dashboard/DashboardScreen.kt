@@ -23,6 +23,14 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import android.content.res.Configuration
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -82,9 +90,19 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.foundation.layout.heightIn
 import com.sentinel.admin.domain.model.Device
 import com.sentinel.admin.ui.DeviceArtwork
 import com.sentinel.admin.ui.FleetOrb
+import com.sentinel.admin.ui.theme.FigmaAccentAmber
+import com.sentinel.admin.ui.theme.FigmaAccentBlue
+import com.sentinel.admin.ui.theme.FigmaAccentGreen
+import com.sentinel.admin.ui.theme.FigmaButtonSurface
+import com.sentinel.admin.ui.theme.FigmaCardBorder
+import com.sentinel.admin.ui.theme.FigmaCardSurface
+import com.sentinel.admin.ui.theme.FigmaTabSelected
+import com.sentinel.admin.ui.theme.FigmaTextMuted
+import com.sentinel.admin.ui.theme.FigmaTextPrimary
 
 /**
  * Dashboard screen displaying monitored devices.
@@ -105,38 +123,38 @@ fun DashboardScreen(
     onRecordingsClick: () -> Unit = {},
     onRetry: () -> Unit,
     onDismissEmergency: () -> Unit = {},
+    onConsumeRefreshOutcome: (Long) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var sortMenuExpanded by remember { mutableStateOf(false) }
     val onlineCount = uiState.devices.count { it.heartbeatStatus == "online" }
+    val configuration = LocalConfiguration.current
+    val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val isCompact = isLandscape || configuration.screenHeightDp < 550
 
     Scaffold(
         containerColor = Color(0xFF0B0F14),
         topBar = {
+            val fontScale = androidx.compose.ui.platform.LocalDensity.current.fontScale
             TopAppBar(
                 title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(10.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFFAAC7E8))
+                    Column {
+                        Text(
+                            text = "Fleet",
+                            fontSize = if (fontScale >= 1.3f) 20.sp else 22.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = FigmaTextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Column {
+                        if (fontScale < 1.3f) {
+                            val offlineCount = (uiState.devices.size - onlineCount).coerceAtLeast(0)
                             Text(
-                                text = "SENTINEL",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Black,
-                                letterSpacing = 1.5.sp,
-                                color = Color(0xFFF0F2F4)
-                            )
-                            Text(
-                                text = "COMMAND CENTER",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp,
-                                color = Color(0xFFAAC7E8)
+                                text = "$onlineCount online · $offlineCount offline",
+                                fontSize = 12.sp,
+                                color = FigmaTextMuted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }
@@ -200,125 +218,302 @@ fun DashboardScreen(
         },
         modifier = modifier
     ) { paddingValues ->
-        Column(
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            uiState.emergencyAlert?.let { alert ->
-                EmergencyAlertBanner(
-                    alert = alert,
-                    onSilence = onDismissEmergency,
-                    onViewDevice = { onDeviceClick(alert.deviceId) },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp)
-                )
-            }
-
-            FleetOverviewCard(
-                total = uiState.devices.size,
-                online = onlineCount,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-
-            // Search bar
-            SearchBar(
-                query = uiState.searchQuery,
-                onQueryChanged = onSearchQueryChanged,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-            )
-
-            // Fleet Filter Chips
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                FleetFilter.entries.forEach { filter ->
-                    val count = when (filter) {
-                        FleetFilter.ALL -> uiState.devices.size
-                        FleetFilter.ONLINE -> uiState.devices.count { it.heartbeatStatus == "online" }
-                        FleetFilter.LOW_BATTERY -> uiState.devices.count { (it.latestLocation?.battery ?: 100) <= 20 }
-                        FleetFilter.EMERGENCY -> uiState.devices.count { (it.latestLocation?.battery ?: 100) <= 15 }
+            if (uiState.viewMode == ViewMode.MAP) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    uiState.emergencyAlert?.let { alert ->
+                        EmergencyAlertBanner(
+                            alert = alert,
+                            onSilence = onDismissEmergency,
+                            onViewDevice = { onDeviceClick(alert.deviceId) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 6.dp)
+                        )
                     }
-                    val isSelected = uiState.fleetFilter == filter
-                    Box(
+
+                    // Search bar
+                    SearchBar(
+                        query = uiState.searchQuery,
+                        onQueryChanged = onSearchQueryChanged,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = if (isCompact) 3.dp else 6.dp)
+                    )
+
+                    // Fleet Filter Chips
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        FleetFilter.entries.forEach { filter ->
+                            val count = when (filter) {
+                                FleetFilter.ALL -> uiState.devices.size
+                                FleetFilter.ONLINE -> uiState.devices.count { it.heartbeatStatus == "online" }
+                                FleetFilter.LOW_BATTERY -> uiState.devices.count {
+                                    val b = it.latestLocation?.battery ?: -1
+                                    b in 0..20
+                                }
+                                FleetFilter.EMERGENCY -> {
+                                    val alertKey = uiState.emergencyAlert?.deviceId
+                                    if (alertKey != null) {
+                                        uiState.devices.count { it.deviceId == alertKey || it.uniqueKey == alertKey || it.connectionId == alertKey }
+                                    } else 0
+                                }
+                            }
+                            val isSelected = uiState.fleetFilter == filter
+                            val tint by androidx.compose.animation.animateColorAsState(
+                                targetValue = if (isSelected) FigmaAccentBlue else FigmaTextMuted,
+                                animationSpec = androidx.compose.animation.core.tween(160),
+                                label = "filterTint"
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(if (isSelected) FigmaTabSelected else FigmaButtonSurface)
+                                    .border(
+                                        1.dp,
+                                        if (isSelected) FigmaAccentBlue else FigmaCardBorder,
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                    .clickable { onFleetFilterChanged(filter) }
+                                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                                    .semantics {
+                                        role = Role.Tab
+                                        contentDescription = "Filter fleet by ${filter.label}, $count devices"
+                                    },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        text = filter.label,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                        color = tint
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(if (isSelected) FigmaAccentBlue.copy(alpha = 0.2f) else Color(0x33FFFFFF))
+                                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                                    ) {
+                                        Text(
+                                            text = "$count",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = tint
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    DashboardMapView(
+                        markers = uiState.markers,
+                        onMarkerClick = onDeviceClick,
                         modifier = Modifier
                             .weight(1f)
-                            .height(36.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(if (isSelected) Color(0xFF283847) else Color(0xFF151B22))
-                            .border(
-                                1.dp,
-                                if (isSelected) Color(0xFFAAC7E8).copy(alpha = 0.62f) else Color(0xFF293542),
-                                RoundedCornerShape(10.dp)
-                            )
-                            .clickable { onFleetFilterChanged(filter) },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "${filter.label} $count",
-                            fontSize = 10.sp,
-                            maxLines = 1,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSelected) Color(0xFFAAC7E8) else Color(0xFF9AA7B6)
-                        )
-                    }
-                }
-            }
-
-            // Loading indicator
-            AnimatedVisibility(visible = uiState.isLoading) {
-                LinearProgressIndicator(
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            // Content
-            when {
-                uiState.isLoading && uiState.devices.isEmpty() -> {
-                    LoadingState()
-                }
-                uiState.errorMessage != null -> {
-                    ErrorState(
-                        message = uiState.errorMessage,
-                        onRetry = onRetry
+                            .fillMaxWidth()
                     )
                 }
-                uiState.isEmpty -> {
-                    EmptyState(
-                        onRefresh = onRefresh,
-                        onDemoDeviceClick = { onDeviceClick("HOST-0001") }
-                    )
-                }
-                uiState.isSearchEmpty -> {
-                    SearchEmptyState(query = uiState.searchQuery)
-                }
-                else -> {
-                    if (uiState.viewMode == ViewMode.MAP) {
-                        DashboardMapView(
-                            markers = uiState.markers,
-                            onMarkerClick = onDeviceClick,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        PullToRefreshBox(
+            } else {
+                val pullState = androidx.compose.material3.pulltorefresh.rememberPullToRefreshState()
+                val isReducedMotion = com.sentinel.admin.ui.common.rememberLiveReducedMotion()
+                PullToRefreshBox(
+                    isRefreshing = uiState.isRefreshing,
+                    onRefresh = {
+                        if (!uiState.isRefreshing) onRefresh()
+                    },
+                    state = pullState,
+                    indicator = {
+                        com.sentinel.admin.ui.common.SentinelRefreshIndicator(
+                            state = pullState,
                             isRefreshing = uiState.isRefreshing,
-                            onRefresh = onRefresh,
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            LazyColumn(
-                                modifier = Modifier.fillMaxSize(),
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                                    horizontal = 16.dp,
-                                    vertical = 8.dp
-                                ),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            operation = uiState.refreshOperation,
+                            onConsumeOutcome = onConsumeRefreshOutcome,
+                            reducedMotion = isReducedMotion,
+                            modifier = Modifier.align(Alignment.TopCenter)
+                        )
+                    },
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            horizontal = 16.dp,
+                            vertical = 8.dp
+                        ),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        uiState.emergencyAlert?.let { alert ->
+                            item(key = "header_emergency_alert") {
+                                EmergencyAlertBanner(
+                                    alert = alert,
+                                    onSilence = onDismissEmergency,
+                                    onViewDevice = { onDeviceClick(alert.deviceId) },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 4.dp)
+                                )
+                            }
+                        }
+
+                        item(key = "header_fleet_overview") {
+                            FleetOverviewCard(
+                                total = uiState.devices.size,
+                                online = onlineCount,
+                                isLoading = uiState.isLoading,
+                                isCompact = isCompact,
+                                modifier = Modifier.padding(vertical = if (isCompact) 2.dp else 4.dp)
+                            )
+                        }
+
+                        item(key = "header_search_bar") {
+                            SearchBar(
+                                query = uiState.searchQuery,
+                                onQueryChanged = onSearchQueryChanged,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = if (isCompact) 2.dp else 4.dp)
+                            )
+                        }
+
+                        item(key = "header_filter_pills") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                                    .padding(vertical = 2.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                FleetFilter.entries.forEach { filter ->
+                                    val count = when (filter) {
+                                        FleetFilter.ALL -> uiState.devices.size
+                                        FleetFilter.ONLINE -> uiState.devices.count { it.heartbeatStatus == "online" }
+                                        FleetFilter.LOW_BATTERY -> uiState.devices.count {
+                                            val b = it.latestLocation?.battery ?: -1
+                                            b in 0..20
+                                        }
+                                        FleetFilter.EMERGENCY -> {
+                                            val alertKey = uiState.emergencyAlert?.deviceId
+                                            if (alertKey != null) {
+                                                uiState.devices.count { it.deviceId == alertKey || it.uniqueKey == alertKey || it.connectionId == alertKey }
+                                            } else 0
+                                        }
+                                    }
+                                    val isSelected = uiState.fleetFilter == filter
+                                    val tint by androidx.compose.animation.animateColorAsState(
+                                        targetValue = if (isSelected) FigmaAccentBlue else FigmaTextMuted,
+                                        animationSpec = androidx.compose.animation.core.tween(160),
+                                        label = "filterTint"
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .heightIn(min = 48.dp)
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(if (isSelected) FigmaTabSelected else FigmaButtonSurface)
+                                            .border(
+                                                1.dp,
+                                                if (isSelected) FigmaAccentBlue else FigmaCardBorder,
+                                                RoundedCornerShape(12.dp)
+                                            )
+                                            .clickable { onFleetFilterChanged(filter) }
+                                            .padding(horizontal = 14.dp, vertical = 10.dp)
+                                            .semantics {
+                                                role = Role.Tab
+                                                contentDescription = "Filter fleet by ${filter.label}, $count devices"
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = filter.label,
+                                                fontSize = 12.sp,
+                                                maxLines = 1,
+                                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                                                color = tint
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(if (isSelected) FigmaAccentBlue.copy(alpha = 0.2f) else Color(0x33FFFFFF))
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            ) {
+                                                Text(
+                                                    text = "$count",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = tint
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (uiState.isLoading) {
+                            item(key = "header_loading_bar") {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+
+                        when {
+                            uiState.isLoading && uiState.devices.isEmpty() -> {
+                                item(key = "state_loading") {
+                                    LoadingState()
+                                }
+                            }
+                            uiState.errorMessage != null -> {
+                                item(key = "state_error") {
+                                    ErrorState(
+                                        message = uiState.errorMessage,
+                                        onRetry = onRetry
+                                    )
+                                }
+                            }
+                            uiState.isEmpty -> {
+                                item(key = "state_empty") {
+                                    EmptyState(
+                                        onRefresh = onRefresh,
+                                        onDemoDeviceClick = { onDeviceClick("HOST-0001") }
+                                    )
+                                }
+                            }
+                            uiState.isSearchEmpty -> {
+                                item(key = "state_search_empty") {
+                                    SearchEmptyState(
+                                        query = uiState.searchQuery,
+                                        filterMessage = uiState.emptyFilterMessage
+                                    )
+                                }
+                            }
+                            else -> {
+                                if (uiState.devices.isNotEmpty()) {
+                                    item(key = "header_devices_title") {
+                                        Text(
+                                            text = "Devices",
+                                            fontSize = 18.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = FigmaTextPrimary,
+                                            modifier = Modifier.padding(horizontal = 0.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
                                 items(
                                     items = uiState.displayDevices,
                                     key = { it.uniqueKey }
@@ -345,91 +540,86 @@ fun DashboardScreen(
 private fun FleetOverviewCard(
     total: Int,
     online: Int,
+    isLoading: Boolean = false,
+    isCompact: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val offline = (total - online).coerceAtLeast(0)
-    val shape = RoundedCornerShape(24.dp)
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(178.dp)
-            .shadow(10.dp, shape, ambientColor = Color(0xFF52708F).copy(alpha = .14f))
-            .clip(shape)
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(Color(0xFF18212A), Color(0xFF11171E), Color(0xFF1C252E))
-                )
-            )
-            .border(
-                width = 1.dp,
-                brush = Brush.linearGradient(listOf(Color(0xFF52677D).copy(alpha = .5f), Color(0xFF293542), Color(0xFF293542))),
-                shape = shape
-            )
+    val offlineCount = (total - online).coerceAtLeast(0)
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(if (isCompact) 8.dp else 12.dp)
     ) {
-        FleetOrb(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .size(112.dp)
-                .alpha(.14f)
-                .offset(x = 12.dp, y = (-5).dp)
-        )
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 18.dp, vertical = 16.dp)
+        // Left KPI Card: Online
+        Card(
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(if (isCompact) 14.dp else 20.dp),
+            colors = CardDefaults.cardColors(containerColor = FigmaCardSurface),
+            border = BorderStroke(1.dp, FigmaCardBorder)
         ) {
-            Text(
-                text = "FLEET STATUS",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 1.1.sp,
-                color = Color(0xFFB7C9DD)
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = "$online / $total",
-                fontSize = 30.sp,
-                lineHeight = 34.sp,
-                fontWeight = FontWeight.Bold,
-                color = Color(0xFFF0F2F4)
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(if (online > 0) Color(0xFF39E4B7) else Color(0xFF7487A8))
-                )
-                Spacer(Modifier.width(7.dp))
-                Text(
-                    text = if (online == total && total > 0) "All devices online" else "$online devices reporting",
-                    fontSize = 12.sp,
-                    color = Color(0xFFABC0DF)
-                )
-            }
-            Row(
+            Column(
                 modifier = Modifier
-                    .padding(top = 7.dp)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(Color(0xFF0C1218).copy(alpha = .72f))
-                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .padding(if (isCompact) 10.dp else 18.dp)
             ) {
-                FleetMetric("TOTAL DEVICES", total.toString(), Color(0xFF75B8FF))
-                FleetMetric("ONLINE", online.toString(), Color(0xFF41E1B6))
-                FleetMetric("OFFLINE", offline.toString(), Color(0xFF899AB8))
+                Text(
+                    text = "Online",
+                    fontSize = if (isCompact) 11.sp else 13.sp,
+                    color = FigmaTextMuted
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "$online / $total",
+                    fontSize = if (isCompact) 18.sp else 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = FigmaTextPrimary
+                )
+                if (!isCompact) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (isLoading) "Syncing…" else "Live fleet status",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (isLoading) FigmaAccentAmber else FigmaAccentGreen
+                    )
+                }
             }
         }
-    }
-}
 
-@Composable
-private fun FleetMetric(label: String, value: String, tint: Color) {
-    Column {
-        Text(label, fontSize = 8.sp, letterSpacing = .7.sp, fontWeight = FontWeight.Bold, color = Color(0xFF778BAA))
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(value, fontSize = 17.sp, lineHeight = 19.sp, fontWeight = FontWeight.SemiBold, color = tint)
+        // Right KPI Card: Offline (Work Order 3: renamed from Needs attention)
+        Card(
+            modifier = Modifier.weight(1f),
+            shape = RoundedCornerShape(if (isCompact) 14.dp else 20.dp),
+            colors = CardDefaults.cardColors(containerColor = FigmaCardSurface),
+            border = BorderStroke(1.dp, FigmaCardBorder)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(if (isCompact) 10.dp else 18.dp)
+            ) {
+                Text(
+                    text = "Offline",
+                    fontSize = if (isCompact) 11.sp else 13.sp,
+                    color = FigmaTextMuted
+                )
+                Spacer(modifier = Modifier.height(2.dp))
+                Text(
+                    text = "$offlineCount",
+                    fontSize = if (isCompact) 18.sp else 26.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = FigmaTextPrimary
+                )
+                if (!isCompact) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = if (offlineCount > 0) "$offlineCount unreachable" else "All devices reachable",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = if (offlineCount > 0) FigmaAccentAmber else FigmaAccentGreen
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -537,7 +727,11 @@ private fun DeviceCard(
                     )
                     val displayName = device.deviceName.ifBlank { device.model.ifBlank { "Unit ${device.displayId}" } }
                     val displayModel = device.model.ifBlank { "Mobile Unit" }
-                    Column {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
+                    ) {
                         Text(
                             text = displayName,
                             style = MaterialTheme.typography.titleSmall,
@@ -546,25 +740,15 @@ private fun DeviceCard(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = displayModel,
-                                fontSize = 11.sp,
-                                color = Color(0xFF8FB2D8),
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = " · ",
-                                fontSize = 11.sp,
-                                color = Color(0xFF7D8997)
-                            )
-                            Text(
-                                text = device.displayId,
-                                fontSize = 11.sp,
-                                fontFamily = FontFamily.Monospace,
-                                color = Color(0xFF7D8997)
-                            )
-                        }
+                        Text(
+                            text = "$displayModel · ${device.displayId}",
+                            fontSize = 11.sp,
+                            color = Color(0xFF8FB2D8),
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
 
@@ -669,10 +853,16 @@ private fun DeviceCard(
                     }
                 }
 
-                // Satellite / GPS
+                // Location / GPS (Work Order Pass 9 R06)
+                val hasValidFix = loc != null && loc.hasReportedFix && com.sentinel.admin.ui.map.isValidCoordinate(loc.latitude, loc.longitude)
+                val gpsSummary = when {
+                    !hasValidFix -> "No fix"
+                    !loc.accuracy.isFinite() || loc.accuracy <= 0.0 -> "Accuracy unknown"
+                    else -> "±${loc.accuracy.toInt()}m"
+                }
                 Column(horizontalAlignment = Alignment.Start) {
                     Text(
-                        text = "SATELLITE",
+                        text = "LOCATION",
                         fontSize = 9.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 0.5.sp,
@@ -683,15 +873,15 @@ private fun DeviceCard(
                         Icon(
                             imageVector = Icons.Default.LocationOn,
                             contentDescription = null,
-                            tint = Color(0xFFAAC7E8),
+                            tint = if (hasValidFix) Color(0xFFAAC7E8) else Color(0xFF7D8997),
                             modifier = Modifier.size(14.dp)
                         )
                         Spacer(modifier = Modifier.width(3.dp))
                         Text(
-                            text = if (loc != null) "±${loc.accuracy.toInt()}m" else "No Fix",
+                            text = gpsSummary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (loc != null) Color(0xFFAAC7E8) else Color(0xFF7D8997)
+                            color = if (hasValidFix) Color(0xFFAAC7E8) else Color(0xFF7D8997)
                         )
                     }
                 }
@@ -816,8 +1006,10 @@ private fun EmptyState(
 @Composable
 private fun SearchEmptyState(
     query: String,
+    filterMessage: String? = null,
     modifier: Modifier = Modifier
 ) {
+    val message = filterMessage ?: if (query.isNotBlank()) "No results for \"$query\"" else "No matching devices found"
     Box(
         modifier = modifier.fillMaxSize(),
         contentAlignment = Alignment.Center
@@ -831,7 +1023,7 @@ private fun SearchEmptyState(
             )
             Spacer(modifier = Modifier.height(16.dp))
             Text(
-                text = "No results for \"$query\"",
+                text = message,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

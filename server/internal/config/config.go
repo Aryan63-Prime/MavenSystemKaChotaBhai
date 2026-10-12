@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"github.com/spf13/viper"
+	"strings"
 )
 
 type Config struct {
@@ -59,11 +61,11 @@ func Load() (*Config, error) {
 			Port: getWithFallback("SERVER_PORT", "PORT", "8080"),
 		},
 		Database: DatabaseConfig{
-			Host:     get("DB_HOST", "localhost"),
+			Host:     get("DB_HOST", ""),
 			Port:     get("DB_PORT", "5432"),
 			User:     get("DB_USER", "postgres"),
 			Password: get("DB_PASSWORD", "postgres"),
-			Name:     get("DB_NAME", "sentinel"),
+			Name:     get("DB_NAME", ""),
 		},
 		Redis: RedisConfig{
 			Host:               get("REDIS_HOST", "localhost"),
@@ -73,10 +75,13 @@ func Load() (*Config, error) {
 			LocationTTLSeconds: getInt("REDIS_LOCATION_TTL_SECONDS", 300),
 		},
 		JWT: JWTConfig{
-			Secret: get("JWT_SECRET", "change_me"),
+			Secret: get("JWT_SECRET", ""),
 		},
 	}
 
+	if len(strings.TrimSpace(cfg.JWT.Secret)) < 32 || cfg.JWT.Secret == "change_me" {
+		return nil, fmt.Errorf("JWT_SECRET must be explicitly configured with at least 32 characters")
+	}
 	return cfg, nil
 }
 

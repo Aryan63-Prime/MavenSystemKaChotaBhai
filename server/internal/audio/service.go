@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+
+	"github.com/google/uuid"
 )
 
 // ErrMissingDeviceID indicates a LISTEN or STOP without a target device.
@@ -24,15 +27,18 @@ type FrameForwarder interface {
 
 // Service manages audio listener state and routes binary frames.
 type Service struct {
-	listeners ListenerRepository
-	forwarder FrameForwarder
+	mu            sync.Mutex
+	listeners     ListenerRepository
+	forwarder     FrameForwarder
+	activeStreams map[string]uuid.UUID
 }
 
 // NewService creates an audio service.
 func NewService(listeners ListenerRepository, forwarder FrameForwarder) *Service {
 	return &Service{
-		listeners: listeners,
-		forwarder: forwarder,
+		listeners:     listeners,
+		forwarder:     forwarder,
+		activeStreams: make(map[string]uuid.UUID),
 	}
 }
 
@@ -42,8 +48,8 @@ func (s *Service) SetForwarder(forwarder FrameForwarder) {
 	s.forwarder = forwarder
 }
 
-// StartListening registers an admin connection as the listener for a device.
-func (s *Service) StartListening(ctx context.Context, adminConnectionID string, targetDeviceID string) error {
+// StartListening registers an admin connection as the listener for a device with optional stream UUID.
+func (s *Service) StartListening(ctx context.Context, adminConnectionID string, targetDeviceID string, streamID ...uuid.UUID) error {
 	cleanTarget := strings.TrimSpace(targetDeviceID)
 	if cleanTarget == "" {
 		return ErrMissingDeviceID
@@ -56,15 +62,33 @@ func (s *Service) StartListening(ctx context.Context, adminConnectionID string, 
 		return nil
 	}
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	currentListener, found, err := s.listeners.GetListener(ctx, cleanTarget)
+	if err != nil {
+		return err
+	}
+	if found && currentListener != adminConnectionID {
+		return fmt.Errorf("start listening: device %s already has active listener %s", cleanTarget, currentListener)
+	}
+
 	if err := s.listeners.SetListener(ctx, cleanTarget, adminConnectionID); err != nil {
 		return err
+	}
+
+	if len(streamID) > 0 && streamID[0] != uuid.Nil {
+		if s.activeStreams == nil {
+			s.activeStreams = make(map[string]uuid.UUID)
+		}
+		s.activeStreams[cleanTarget] = streamID[0]
 	}
 
 	return nil
 }
 
-// StopListening removes the listener for a device.
-func (s *Service) StopListening(ctx context.Context, targetDeviceID string) error {
+// StopListening removes the listener for a device if owned by the calling admin connection.
+func (s *Service) StopListening(ctx context.Context, adminConnectionID string, targetDeviceID string, streamID ...uuid.UUID) error {
 	cleanTarget := strings.TrimSpace(targetDeviceID)
 	if cleanTarget == "" {
 		return ErrMissingDeviceID
@@ -74,20 +98,72 @@ func (s *Service) StopListening(ctx context.Context, targetDeviceID string) erro
 		return nil
 	}
 
-	_ = s.listeners.RemoveListener(ctx, cleanTarget)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	return nil
+	currentListener, found, err := s.listeners.GetListener(ctx, cleanTarget)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("stop listening: no active listener for device %s", cleanTarget)
+	}
+
+	// Enforce connection ownership
+	if adminConnectionID != "" && currentListener != adminConnectionID {
+		return fmt.Errorf("stop listening: unauthorized connection %s does not own listener %s for %s", adminConnectionID, currentListener, cleanTarget)
+	}
+
+	if len(streamID) > 0 && streamID[0] != uuid.Nil && s.activeStreams != nil {
+		if active, ok := s.activeStreams[cleanTarget]; ok && active != streamID[0] {
+			return fmt.Errorf("stop listening: mismatched stream id %s (active is %s)", streamID[0], active)
+		}
+	}
+
+	if s.activeStreams != nil {
+		delete(s.activeStreams, cleanTarget)
+	}
+
+	return s.listeners.RemoveListener(ctx, cleanTarget)
+}
+
+// ActiveStream returns the active stream UUID for a device if one is registered.
+func (s *Service) ActiveStream(deviceID string) (uuid.UUID, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.activeStreams == nil {
+		return uuid.Nil, false
+	}
+	streamID, ok := s.activeStreams[deviceID]
+	return streamID, ok
 }
 
 // RouteFrame validates and forwards a binary audio frame to the listening admin.
 // Returns nil silently if no one is listening (audio is lossy by nature).
+// Drops stale or mismatched AUDIO_V2 frames whose stream UUID doesn't match the active stream.
 func (s *Service) RouteFrame(ctx context.Context, sourceDeviceID string, frame []byte) error {
-	if err := ValidateFrame(frame); err != nil {
+	header, err := ParseHeader(frame)
+	if err != nil {
 		return err
 	}
 
 	if s.listeners == nil || s.forwarder == nil {
 		return nil
+	}
+
+	s.mu.Lock()
+	var activeStream uuid.UUID
+	var hasActiveStream bool
+	if s.activeStreams != nil {
+		activeStream, hasActiveStream = s.activeStreams[sourceDeviceID]
+	}
+	s.mu.Unlock()
+
+	// If packet is AUDIO_V2 (0x03), drop if source device stream does not match active stream
+	if header.PacketType == PacketTypeAudioV2 {
+		if !hasActiveStream || header.StreamID != activeStream {
+			return nil
+		}
 	}
 
 	connectionID, found, err := s.listeners.GetListener(ctx, sourceDeviceID)

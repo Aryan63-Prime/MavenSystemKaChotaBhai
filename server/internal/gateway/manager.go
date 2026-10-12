@@ -59,83 +59,59 @@ func (m *Manager) Snapshots() []SessionSnapshot {
 	return snapshots
 }
 
-// SnapshotByDeviceID returns a read-only session copy for a device.
-// Matches deviceID, connectionID, uniqueKey (e.g. HOST-001_SM-S928B),
-// callsign suffix, model, or prefix.
-// If multiple sessions share the same deviceID, it prioritizes the newest registered host session.
+// SnapshotByDeviceID resolves exact identities before explicit legacy aliases.
+// An alias must identify one device; shared tokens and model names are not identities.
 func (m *Manager) SnapshotByDeviceID(deviceID string) (SessionSnapshot, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	var registered SessionSnapshot
-	foundRegistered := false
-
-	cleanTarget := strings.TrimSpace(deviceID)
-	var singleHostSession SessionSnapshot
-	registeredHostCount := 0
-
+	target := strings.TrimSpace(deviceID)
+	if target == "" {
+		return SessionSnapshot{}, false
+	}
+	var exact, aliases []SessionSnapshot
 	for _, session := range m.sessions {
-		// Admin sessions (or unauthenticated/unregistered sessions) must NEVER be targeted as hosts
-		if session.IsAdmin() || !session.IsRegistered() {
+		snapshot := session.Snapshot()
+		if !snapshot.Authenticated || !snapshot.Registered {
 			continue
 		}
-
-		snapshot := session.Snapshot()
-		registeredHostCount++
-		singleHostSession = snapshot
-
-		uniqueKey := snapshot.DeviceID
-		if snapshot.Model != "" {
-			uniqueKey = snapshot.DeviceID + "_" + snapshot.Model
+		if snapshot.ConnectionID == target {
+			return snapshot, true
 		}
-
-		// Exact matches
-		matches := snapshot.DeviceID == cleanTarget ||
-			snapshot.ConnectionID == cleanTarget ||
-			uniqueKey == cleanTarget ||
-			(cleanTarget != "" && strings.Contains(snapshot.DeviceName, cleanTarget))
-
-		// Flexible / Prefix / Suffix / Model matching
-		if !matches && cleanTarget != "" {
-			// 1. Target is base ID (e.g. "HOST-001") and session is hardware-suffixed (e.g. "HOST-001-VIVO-2D2C")
-			if strings.HasPrefix(snapshot.DeviceID, cleanTarget+"-") || strings.HasPrefix(snapshot.DeviceID, cleanTarget+"_") {
-				matches = true
-			}
-			// 2. Target has model suffix (e.g. "HOST-001_I2401")
-			if strings.Contains(cleanTarget, "_") {
-				parts := strings.SplitN(cleanTarget, "_", 2)
-				targetPrefix := parts[0]
-				targetModel := parts[1]
-				if (snapshot.Model == targetModel || strings.EqualFold(snapshot.Model, targetModel)) &&
-					(snapshot.DeviceID == targetPrefix || strings.HasPrefix(snapshot.DeviceID, targetPrefix+"-") || targetPrefix == "HOST-001") {
-					matches = true
-				}
-			}
-			// 3. Target is callsign suffix (e.g. "HOST-VIVO-2D2C" or "VIVO-2D2C")
-			if strings.HasSuffix(snapshot.DeviceID, cleanTarget) ||
-				strings.HasSuffix(snapshot.DeviceID, strings.TrimPrefix(cleanTarget, "HOST-")) {
-				matches = true
-			}
+		if snapshot.DeviceID == target || snapshot.DeviceID+"_"+snapshot.Model == target {
+			exact = append(exact, snapshot)
+			continue
 		}
-
-		if matches {
-			if !foundRegistered || snapshot.ConnectedAt.After(registered.ConnectedAt) {
-				registered = snapshot
-				foundRegistered = true
-			}
+		// Compatibility with old hardware callsigns and token_model UI keys.
+		callsign := ""
+		if strings.HasPrefix(snapshot.DeviceID, "HOST-001-") {
+			callsign = "HOST-" + strings.TrimPrefix(snapshot.DeviceID, "HOST-001-")
+		}
+		legacyModel := "HOST-001_" + snapshot.Model
+		if (callsign != "" && callsign == target) ||
+			(snapshot.Model != "" && target == legacyModel && strings.HasPrefix(snapshot.DeviceID, "HOST-001-")) {
+			aliases = append(aliases, snapshot)
 		}
 	}
-
-	if foundRegistered {
-		return registered, true
+	matches := exact
+	if len(matches) == 0 {
+		matches = aliases
 	}
-
-	// Fallback: If only 1 host is online and target is generic "HOST-001" or starts with "HOST-001"
-	if registeredHostCount == 1 && (cleanTarget == "HOST-001" || strings.HasPrefix(cleanTarget, "HOST-001")) {
-		return singleHostSession, true
+	if len(matches) == 0 {
+		return SessionSnapshot{}, false
 	}
-
-	return SessionSnapshot{}, false
+	selected := matches[0]
+	for _, candidate := range matches[1:] {
+		// Reconnects of a hardware-specific identity can overlap briefly.
+		// A generic token cannot establish that two sessions are the same phone.
+		if candidate.DeviceID != selected.DeviceID || candidate.Model != selected.Model || selected.DeviceID == "HOST-001" {
+			return SessionSnapshot{}, false
+		}
+		if candidate.ConnectedAt.After(selected.ConnectedAt) ||
+			(candidate.ConnectedAt.Equal(selected.ConnectedAt) && candidate.ConnectionID > selected.ConnectionID) {
+			selected = candidate
+		}
+	}
+	return selected, true
 }
 
 // CloseAll cancels and closes every active session connection.

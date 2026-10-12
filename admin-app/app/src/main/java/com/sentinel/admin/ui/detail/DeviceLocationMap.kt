@@ -24,6 +24,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -177,6 +178,9 @@ fun DeviceLocationMap(
                     .height(164.dp)
             ) {
                 SpatialMapBackdrop(modifier = Modifier.fillMaxSize())
+                val quotedDeviceName = remember(deviceName) { org.json.JSONObject.quote(deviceName) }
+                val quotedCleanNetwork = remember(cleanNetwork) { org.json.JSONObject.quote(cleanNetwork) }
+
                 AndroidView(
                     modifier = Modifier.fillMaxSize().alpha(.38f),
                     factory = { ctx ->
@@ -194,18 +198,18 @@ fun DeviceLocationMap(
                         WebView(ctx).apply {
                             settings.javaScriptEnabled = true
                             settings.domStorageEnabled = true
-                            settings.allowFileAccess = true
-                            settings.allowContentAccess = true
+                            settings.allowFileAccess = false
+                            settings.allowContentAccess = false
                             @Suppress("DEPRECATION")
-                            settings.allowFileAccessFromFileURLs = true
+                            settings.allowFileAccessFromFileURLs = false
                             @Suppress("DEPRECATION")
-                            settings.allowUniversalAccessFromFileURLs = true
-                            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                            settings.allowUniversalAccessFromFileURLs = false
+                            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                             webViewClient = object : WebViewClient() {
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     super.onPageFinished(view, url)
                                     view?.evaluateJavascript(
-                                        "if (typeof updatePosition === 'function') { updatePosition(${location.latitude}, ${location.longitude}, ${location.accuracy}, ${location.battery}, '$cleanNetwork', $isOnline); }",
+                                        "if (typeof updatePosition === 'function') { updatePosition(${location.latitude}, ${location.longitude}, ${location.accuracy}, ${location.battery}, $quotedCleanNetwork, $isOnline, true); }",
                                         null
                                     )
                                 }
@@ -252,6 +256,8 @@ fun DeviceLocationMap(
                                     <div id="map"></div>
                                     <script>
                                         var map = L.map('map', { zoomControl: false }).setView([${location.latitude}, ${location.longitude}], 16);
+                                        var userPanned = false;
+                                        map.on('dragstart zoomstart', function() { userPanned = true; });
                                         
                                         // Tactical Dark Map Tiles (Carto Dark Matter with retina support)
                                         L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
@@ -260,6 +266,18 @@ fun DeviceLocationMap(
                                             attribution: '© CARTO'
                                         }).addTo(map);
 
+                                        function createPopupNode(name, batt, net) {
+                                            var container = document.createElement('div');
+                                            var b = document.createElement('b');
+                                            b.textContent = name;
+                                            container.appendChild(b);
+                                            container.appendChild(document.createElement('br'));
+                                            var s = document.createElement('span');
+                                            s.textContent = '⚡ ' + batt + '% · ' + net;
+                                            container.appendChild(s);
+                                            return container;
+                                        }
+
                                         var marker = L.circleMarker([${location.latitude}, ${location.longitude}], {
                                             radius: 8,
                                             color: '#ffffff',
@@ -267,7 +285,7 @@ fun DeviceLocationMap(
                                             fillColor: '$pinColor',
                                             fillOpacity: 1.0
                                         }).addTo(map)
-                                            .bindPopup('<b>$deviceName</b><br>⚡ ${location.battery}% · $cleanNetwork');
+                                            .bindPopup(createPopupNode($quotedDeviceName, ${location.battery}, $quotedCleanNetwork));
 
                                         var circle = L.circle([${location.latitude}, ${location.longitude}], {
                                             color: '#00E5FF',
@@ -277,29 +295,34 @@ fun DeviceLocationMap(
                                             radius: ${location.accuracy}
                                         }).addTo(map);
                                         
-                                        function updatePosition(lat, lng, acc, batt, net, online) {
+                                        function updatePosition(lat, lng, acc, batt, net, online, forceFollow) {
                                             map.invalidateSize();
                                             var newPos = [lat, lng];
-                                            map.setView(newPos, 16);
                                             marker.setLatLng(newPos);
-                                            marker.setPopupContent('<b>' + '$deviceName' + '</b><br>⚡ ' + batt + '% · ' + net);
+                                            marker.setPopupContent(createPopupNode($quotedDeviceName, batt, net));
                                             circle.setLatLng(newPos);
                                             circle.setRadius(acc);
                                             var newColor = online ? '#10B981' : '#64748B';
                                             marker.setStyle({ fillColor: newColor });
+                                            if (forceFollow || !userPanned) {
+                                                map.setView(newPos, 16);
+                                            }
                                         }
                                     </script>
                                 </body>
                                 </html>
                             """.trimIndent()
-                            loadDataWithBaseURL("file:///android_asset/", html, "text/html", "UTF-8", null)
+                            loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
                         }
                     },
                     update = { webView ->
                         webView.evaluateJavascript(
-                            "if (typeof updatePosition === 'function') { updatePosition(${location.latitude}, ${location.longitude}, ${location.accuracy}, ${location.battery}, '$cleanNetwork', $isOnline); }",
+                            "if (typeof updatePosition === 'function') { updatePosition(${location.latitude}, ${location.longitude}, ${location.accuracy}, ${location.battery}, $quotedCleanNetwork, $isOnline, false); }",
                             null
                         )
+                    },
+                    onRelease = { webView ->
+                        webView.destroy()
                     }
                 )
 
@@ -375,7 +398,7 @@ fun DeviceLocationMap(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${String.format("%.5f", location.latitude)}, ${String.format("%.5f", location.longitude)} (±${location.accuracy.toInt()}m)",
+                    text = "${String.format(java.util.Locale.US, "%.5f", location.latitude)}, ${String.format(java.util.Locale.US, "%.5f", location.longitude)} (±${location.accuracy.toInt()}m)",
                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                     fontSize = 11.sp,
                     color = Color(0xFF9AA7B6),

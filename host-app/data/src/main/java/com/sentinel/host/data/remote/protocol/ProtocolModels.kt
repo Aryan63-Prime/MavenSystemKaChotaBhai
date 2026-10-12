@@ -139,7 +139,9 @@ internal data class FileStopReqJson(
 
 @JsonClass(generateAdapter = true)
 internal data class ListenDataJson(
-    val deviceId: String = ""
+    val deviceId: String = "",
+    val streamId: String? = null,
+    val maxDurationSeconds: Long? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -150,7 +152,8 @@ internal data class ListenMessageJson(
 
 @JsonClass(generateAdapter = true)
 internal data class StopDataJson(
-    val deviceId: String = ""
+    val deviceId: String = "",
+    val streamId: String? = null
 )
 
 @JsonClass(generateAdapter = true)

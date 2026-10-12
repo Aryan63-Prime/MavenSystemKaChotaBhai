@@ -21,6 +21,8 @@ func Validate(tokenString string, secret string) (*Claims, error) {
 			return []byte(secret), nil
 		},
 		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithExpirationRequired(),
+		jwt.WithIssuer("project-sentinel"),
 	)
 
 	if err != nil {

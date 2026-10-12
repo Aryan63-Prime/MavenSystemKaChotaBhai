@@ -5,6 +5,7 @@ import (
 )
 
 func TestLoad_ReturnsValidConfig(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-only-signing-secret-at-least-32-characters")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -15,6 +16,7 @@ func TestLoad_ReturnsValidConfig(t *testing.T) {
 }
 
 func TestLoad_Defaults(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-only-signing-secret-at-least-32-characters")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -35,6 +37,7 @@ func TestLoad_Defaults(t *testing.T) {
 }
 
 func TestLoad_EnvOverride(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-only-signing-secret-at-least-32-characters")
 	t.Setenv("SERVER_PORT", "9999")
 	t.Setenv("APP_NAME", "TestSentinel")
 
@@ -52,6 +55,7 @@ func TestLoad_EnvOverride(t *testing.T) {
 }
 
 func TestLoad_RedisEnvOverride(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-only-signing-secret-at-least-32-characters")
 	t.Setenv("REDIS_HOST", "redis.example.com")
 	t.Setenv("REDIS_PORT", "6380")
 
@@ -83,19 +87,21 @@ func TestGetInt_Fallback(t *testing.T) {
 }
 
 func TestLoad_JWTConfig(t *testing.T) {
-	t.Setenv("JWT_SECRET", "test-secret-value")
+	t.Setenv("JWT_SECRET", "test-only-signing-secret-at-least-32-characters")
+	t.Setenv("JWT_SECRET", "test-only-signing-secret-at-least-32-characters")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.JWT.Secret != "test-secret-value" {
-		t.Errorf("expected JWT secret test-secret-value, got %s", cfg.JWT.Secret)
+	if cfg.JWT.Secret != "test-only-signing-secret-at-least-32-characters" {
+		t.Errorf("expected JWT secret test-only-signing-secret-at-least-32-characters, got %s", cfg.JWT.Secret)
 	}
 }
 
 func TestLoad_DatabaseConfig(t *testing.T) {
+	t.Setenv("JWT_SECRET", "test-only-signing-secret-at-least-32-characters")
 	t.Setenv("DB_HOST", "db.example.com")
 	t.Setenv("DB_PORT", "5433")
 	t.Setenv("DB_NAME", "testdb")
@@ -113,5 +119,14 @@ func TestLoad_DatabaseConfig(t *testing.T) {
 	}
 	if cfg.Database.Name != "testdb" {
 		t.Errorf("expected db name testdb, got %s", cfg.Database.Name)
+	}
+}
+
+func TestLoadRejectsUnsafeJWTSecret(t *testing.T) {
+	for _, secret := range []string{"", "change_me", "short"} {
+		t.Setenv("JWT_SECRET", secret)
+		if _, err := Load(); err == nil {
+			t.Fatal("unsafe JWT secret accepted")
+		}
 	}
 }

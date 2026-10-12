@@ -3,8 +3,10 @@ package location
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/xaiop/project-sentinel/server/internal/protocol"
+	"github.com/xaiop/project-sentinel/server/internal/repository"
 )
 
 type Session interface {
@@ -13,14 +15,24 @@ type Session interface {
 	SetLocation(message protocol.LocationMessage)
 }
 
+type BatteryLogger interface {
+	SaveBatteryHistory(ctx context.Context, entry repository.BatteryHistoryEntry) error
+}
+
 type Handler struct {
-	service *Service
+	service       *Service
+	batteryLogger BatteryLogger
 }
 
 func NewHandler(service *Service) *Handler {
 	return &Handler{
 		service: service,
 	}
+}
+
+// SetBatteryLogger configures the battery history storage logger.
+func (h *Handler) SetBatteryLogger(l BatteryLogger) {
+	h.batteryLogger = l
 }
 
 func (h *Handler) Handle(ctx context.Context, session Session, message protocol.Message) (*protocol.Message, error) {
@@ -55,6 +67,17 @@ func (h *Handler) Handle(ctx context.Context, session Session, message protocol.
 	}
 
 	session.SetLocation(payload)
+
+	if h.batteryLogger != nil && payload.Battery > 0 {
+		_ = h.batteryLogger.SaveBatteryHistory(ctx, repository.BatteryHistoryEntry{
+			DeviceID:       deviceID,
+			BatteryPercent: payload.Battery,
+			BatteryTempC:   25.0,
+			IsCharging:     strings.Contains(strings.ToLower(payload.Network), "charging"),
+			ThermalStatus:  "Nominal",
+			RecordedAt:     time.Now().UTC(),
+		})
+	}
 
 	return nil, nil
 }

@@ -6,6 +6,8 @@ package com.sentinel.shared.protocol
  */
 object AudioConstants {
     const val HEADER_SIZE = 13
+    const val HEADER_V2_SIZE = 29
+    const val STREAM_ID_SIZE = 16
     const val SAMPLE_RATE = 48000
     const val CHANNELS = 1
     const val FRAME_DURATION_MS = 20

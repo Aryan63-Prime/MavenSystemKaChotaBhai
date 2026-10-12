@@ -48,6 +48,18 @@ class AudioRepositoryImplTest {
     }
 
     @Test
+    fun `listen with streamId includes streamId and audioVersion`() {
+        fakeConnection.sendTextResult = true
+        val streamId = java.util.UUID.randomUUID()
+        val result = repo.listen("HOST-0001", streamId)
+
+        assertTrue(result)
+        assertEquals(1, fakeConnection.sentTexts.size)
+        assertTrue(fakeConnection.sentTexts[0].contains(streamId.toString()))
+        assertTrue(fakeConnection.sentTexts[0].contains("\"audioVersion\":2"))
+    }
+
+    @Test
     fun `stopListening sends STOP message with device ID`() {
         fakeConnection.sendTextResult = true
         val result = repo.stopListening("HOST-0001")
@@ -56,6 +68,17 @@ class AudioRepositoryImplTest {
         assertEquals(1, fakeConnection.sentTexts.size)
         assertTrue(fakeConnection.sentTexts[0].contains("\"type\":\"STOP\""))
         assertTrue(fakeConnection.sentTexts[0].contains("HOST-0001"))
+    }
+
+    @Test
+    fun `stopListening with streamId includes streamId`() {
+        fakeConnection.sendTextResult = true
+        val streamId = java.util.UUID.randomUUID()
+        val result = repo.stopListening("HOST-0001", streamId)
+
+        assertTrue(result)
+        assertEquals(1, fakeConnection.sentTexts.size)
+        assertTrue(fakeConnection.sentTexts[0].contains(streamId.toString()))
     }
 
     @Test

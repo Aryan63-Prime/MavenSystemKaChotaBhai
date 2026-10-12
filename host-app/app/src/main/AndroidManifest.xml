@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:installLocation="internalOnly">
 
     <!-- Network -->
@@ -46,10 +47,13 @@
     <!-- Notifications (API 33+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
-    <!-- Contacts & SMS -->
+    <!-- Contacts, Call Logs, Packages & SMS -->
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
     <uses-permission android:name="android.permission.READ_SMS" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
 
     <application
         android:name=".SentinelApp"
@@ -70,17 +74,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- Invisible 1ms Trampoline Activity for Background Mic Elevation -->
-        <activity
-            android:name=".ui.SentinelTrampolineActivity"
-            android:exported="false"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar"
-            android:excludeFromRecents="true"
-            android:noHistory="true"
-            android:taskAffinity=""
-            android:launchMode="singleInstance" />
-
         <!-- Boot Receiver: fires ONLY after user unlock (BOOT_COMPLETED) -->
         <receiver
             android:name=".receiver.BootReceiver"
@@ -125,6 +118,7 @@
                 <action android:name="com.sentinel.host.action.WATCHDOG_TICK" />
             </intent-filter>
         </receiver>
+
 
         <service
             android:name=".service.SentinelForegroundService"

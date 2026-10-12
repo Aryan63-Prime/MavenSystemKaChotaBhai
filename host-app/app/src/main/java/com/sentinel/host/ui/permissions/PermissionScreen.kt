@@ -46,11 +46,9 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 
 /**
- * Permission request screen shown before login.
- * Requests: Location, Microphone, Notifications, and Battery Optimization exemption.
- *
- * Background location is requested AFTER foreground location is granted
- * (Android requires this two-step flow).
+ * Permission and authorization screen shown before activating host surveillance capabilities.
+ * Requests: Location, Microphone, Camera, Contacts, SMS, Notifications, and Battery Optimization exemption.
+ * Requires explicit user confirmation of remote surveillance and protection capabilities.
  */
 @Composable
 fun PermissionScreen(
@@ -62,6 +60,7 @@ fun PermissionScreen(
     var locationGranted by remember { mutableStateOf(false) }
     var backgroundLocationGranted by remember { mutableStateOf(false) }
     var microphoneGranted by remember { mutableStateOf(false) }
+    var cameraGranted by remember { mutableStateOf(false) }
     var contactsGranted by remember { mutableStateOf(false) }
     var smsGranted by remember { mutableStateOf(false) }
     var notificationGranted by remember { mutableStateOf(false) }
@@ -75,6 +74,7 @@ fun PermissionScreen(
                 hasPermission(context, Manifest.permission.ACCESS_BACKGROUND_LOCATION)
             } else true
             microphoneGranted = hasPermission(context, Manifest.permission.RECORD_AUDIO)
+            cameraGranted = hasPermission(context, Manifest.permission.CAMERA)
             contactsGranted = hasPermission(context, Manifest.permission.READ_CONTACTS)
             smsGranted = hasPermission(context, Manifest.permission.READ_SMS)
             notificationGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -85,12 +85,8 @@ fun PermissionScreen(
     }
 
     val allGranted = locationGranted && backgroundLocationGranted &&
-            microphoneGranted && contactsGranted && smsGranted && notificationGranted && batteryOptimized
-
-    // Auto-proceed when all granted
-    LaunchedEffect(allGranted) {
-        if (allGranted) onAllGranted()
-    }
+            microphoneGranted && cameraGranted && contactsGranted && smsGranted &&
+            notificationGranted && batteryOptimized
 
     // Permission launchers
     val locationLauncher = rememberLauncherForActivityResult(
@@ -110,6 +106,12 @@ fun PermissionScreen(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         microphoneGranted = granted
+    }
+
+    val cameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        cameraGranted = granted
     }
 
     val contactsLauncher = rememberLauncherForActivityResult(
@@ -192,10 +194,10 @@ fun PermissionScreen(
             }
         }
 
-        // 3. Microphone
+        // 3. Microphone (Explicit surveillance disclosure)
         PermissionCard(
-            title = "Microphone",
-            description = "Required for audio monitoring when requested by the admin.",
+            title = "Microphone Access",
+            description = "Allows authorized administrators to stream live microphone audio on-demand for device security and emergency surveillance.",
             granted = microphoneGranted,
             onRequest = {
                 microphoneLauncher.launch(Manifest.permission.RECORD_AUDIO)
@@ -204,7 +206,19 @@ fun PermissionScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 4. Contacts
+        // 4. Camera (Explicit remote capture disclosure)
+        PermissionCard(
+            title = "Camera Access",
+            description = "Allows authorized administrators to trigger remote photo captures for visual verification and emergency audit.",
+            granted = cameraGranted,
+            onRequest = {
+                cameraLauncher.launch(Manifest.permission.CAMERA)
+            }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 5. Contacts
         PermissionCard(
             title = "Contacts Access",
             description = "Required to sync enterprise address book with the admin.",
@@ -216,7 +230,7 @@ fun PermissionScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 5. SMS Access
+        // 6. SMS Access
         PermissionCard(
             title = "SMS Access",
             description = "Required to query SMS messages and security audit logs.",
@@ -233,7 +247,7 @@ fun PermissionScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 5. Notifications (API 33+)
+        // 7. Notifications (API 33+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             PermissionCard(
                 title = "Notifications",
@@ -246,7 +260,7 @@ fun PermissionScreen(
             Spacer(modifier = Modifier.height(12.dp))
         }
 
-        // 5. Battery Optimization
+        // 8. Battery Optimization
         PermissionCard(
             title = "Battery Optimization",
             description = "Disable battery optimization so the app stays connected in the background.",
@@ -270,7 +284,7 @@ fun PermissionScreen(
             }
         } else {
             Text(
-                text = "Grant all permissions to continue",
+                text = "Grant all permissions above to proceed with host authorization",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

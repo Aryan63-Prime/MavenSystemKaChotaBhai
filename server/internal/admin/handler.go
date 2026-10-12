@@ -53,13 +53,44 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ListDevicesResponse{Devices: devices})
 }
 
-// RouteDevice routes /devices/{deviceId} or /devices/{deviceId}/wake.
+// RouteDevice routes /devices/{deviceId}, /devices/{deviceId}/wake, or /devices/{deviceId}/battery-history.
 func (h *Handler) RouteDevice(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/wake") {
 		h.WakeDevice(w, r)
 		return
 	}
+	if strings.HasSuffix(r.URL.Path, "/battery-history") {
+		h.GetBatteryHistory(w, r)
+		return
+	}
 	h.GetDevice(w, r)
+}
+
+// GetBatteryHistory handles GET /devices/{deviceId}/battery-history.
+func (h *Handler) GetBatteryHistory(w http.ResponseWriter, r *http.Request) {
+	if !h.allowGET(w, r) || !h.authorize(w, r) {
+		return
+	}
+
+	trimmed := strings.TrimPrefix(r.URL.Path, "/devices/")
+	trimmed = strings.TrimSuffix(trimmed, "/battery-history")
+	deviceID, err := url.PathUnescape(trimmed)
+	if err != nil || strings.TrimSpace(deviceID) == "" || strings.Contains(deviceID, "/") {
+		writeError(w, http.StatusBadRequest, "Invalid device ID in path")
+		return
+	}
+
+	limit := 100
+	history, err := h.service.GetBatteryHistory(r.Context(), deviceID, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deviceId": deviceID,
+		"history":  history,
+	})
 }
 
 // WakeDevice handles POST /devices/{deviceId}/wake.
@@ -146,8 +177,14 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
-	if _, err := h.authenticator.Authenticate(token); err != nil {
+	identity, err := h.authenticator.Authenticate(token)
+	if err != nil {
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
+		return false
+	}
+
+	if !auth.IsAdminIdentity(identity) {
+		writeError(w, http.StatusForbidden, "Forbidden")
 		return false
 	}
 

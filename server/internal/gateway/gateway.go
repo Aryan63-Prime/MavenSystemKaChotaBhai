@@ -130,6 +130,8 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request) {
 	g.wg.Add(1)
 	defer g.wg.Done()
 
+	// Bound memory consumed by one untrusted WebSocket message.
+	conn.SetReadLimit(2 << 20)
 	connectionID := uuid.NewString()
 	ctx, cancel := context.WithCancel(r.Context())
 

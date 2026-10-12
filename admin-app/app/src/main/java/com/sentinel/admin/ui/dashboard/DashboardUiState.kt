@@ -29,7 +29,9 @@ data class DashboardUiState(
     /** Error message, null if no error. */
     val errorMessage: String? = null,
     /** Active emergency alert (e.g. fall detected), or null if none. */
-    val emergencyAlert: com.sentinel.admin.domain.model.EmergencyAlert? = null
+    val emergencyAlert: com.sentinel.admin.domain.model.EmergencyAlert? = null,
+    /** Authoritative refresh operation lifecycle state. */
+    val refreshOperation: com.sentinel.admin.ui.common.RefreshOperation = com.sentinel.admin.ui.common.RefreshOperation.Idle
 ) {
     /** True if no devices after loading completes. */
     val isEmpty: Boolean
@@ -38,6 +40,14 @@ data class DashboardUiState(
     /** True if there are devices but search returned no results. */
     val isSearchEmpty: Boolean
         get() = !isLoading && devices.isNotEmpty() && displayDevices.isEmpty()
+
+    /** Human-readable explanation when filtered results are empty. */
+    val emptyFilterMessage: String?
+        get() = when {
+            searchQuery.isNotBlank() -> "No results for \"$searchQuery\""
+            fleetFilter != FleetFilter.ALL -> "No devices match filter: ${fleetFilter.label}"
+            else -> null
+        }
 }
 
 /**

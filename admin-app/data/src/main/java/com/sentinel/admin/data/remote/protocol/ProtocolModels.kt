@@ -35,12 +35,15 @@ internal data class AuthDataJson(
 
 @JsonClass(generateAdapter = true)
 internal data class ListenDataJson(
-    val deviceId: String
+    val deviceId: String,
+    val streamId: String? = null,
+    val audioVersion: Int = 2
 )
 
 @JsonClass(generateAdapter = true)
 internal data class StopDataJson(
-    val deviceId: String
+    val deviceId: String,
+    val streamId: String? = null
 )
 
 // ============================================================

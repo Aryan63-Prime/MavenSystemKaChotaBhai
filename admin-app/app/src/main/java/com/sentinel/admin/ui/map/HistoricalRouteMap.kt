@@ -61,8 +61,11 @@ fun HistoricalRouteMap(
 
         // Render Dwell Point markers (locations where device stopped)
         dwellSpots.forEach { dwell ->
+            val dwellMarkerState = remember(dwell.latitude, dwell.longitude) {
+                MarkerState(position = LatLng(dwell.latitude, dwell.longitude))
+            }
             Marker(
-                state = MarkerState(position = LatLng(dwell.latitude, dwell.longitude)),
+                state = dwellMarkerState,
                 title = "Stopped for ${dwell.durationMinutes} min",
                 snippet = "From ${dwell.startTime} to ${dwell.endTime}",
                 icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_AZURE)
@@ -70,8 +73,11 @@ fun HistoricalRouteMap(
         }
 
         // Active Historical Avatar Marker at current scrubber position
+        val activeMarkerState = remember(activePoint.latitude, activePoint.longitude) {
+            MarkerState(position = LatLng(activePoint.latitude, activePoint.longitude))
+        }
         Marker(
-            state = MarkerState(position = LatLng(activePoint.latitude, activePoint.longitude)),
+            state = activeMarkerState,
             title = "Speed: ${activePoint.speedKmh.toInt()} km/h",
             icon = BitmapDescriptorFactory.defaultMarker(BitmapDescriptorFactory.HUE_VIOLET)
         )

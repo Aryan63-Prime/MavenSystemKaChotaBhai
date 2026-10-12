@@ -25,13 +25,15 @@ import android.os.HandlerThread
 import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import com.sentinel.host.domain.session.SessionManager
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.resume
 
 @Singleton
 class CameraCapturer @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val sessionManager: SessionManager
 ) {
     companion object {
         private const val TAG = "Sentinel:Camera"
@@ -40,8 +42,30 @@ class CameraCapturer @Inject constructor(
     private val cameraMutex = Mutex()
 
     @SuppressLint("MissingPermission")
-    suspend fun capturePhoto(useFrontCamera: Boolean = false): Map<String, Any> = cameraMutex.withLock {
-        val result = withTimeoutOrNull(6000L) {
+    suspend fun capturePhoto(
+        useFrontCamera: Boolean = false,
+        streamId: java.util.UUID? = null
+    ): Map<String, Any> = cameraMutex.withLock {
+        if (!sessionManager.isEnrollmentApproved()) {
+            Log.w(TAG, "Cannot capture photo: on-device enrollment approval not granted")
+            return@withLock mapOf("success" to false, "error" to "On-device enrollment approval not granted")
+        }
+        val targetStreamId = if (streamId != null && streamId != com.sentinel.host.data.session.SessionManagerImpl.NIL_UUID) {
+            streamId
+        } else {
+            java.util.UUID.randomUUID()
+        }
+        val permit = sessionManager.authorizeCapture(
+            streamId = targetStreamId,
+            operation = com.sentinel.host.domain.session.CaptureOperation.PHOTO_CAPTURE,
+            durationSeconds = 30L
+        )
+        if (permit == null || !sessionManager.isCapturePermitted(targetStreamId, com.sentinel.host.domain.session.CaptureOperation.PHOTO_CAPTURE)) {
+            Log.w(TAG, "Cannot capture photo: PHOTO_CAPTURE operation not permitted (streamId=$streamId)")
+            return@withLock mapOf("success" to false, "error" to "Photo capture operation not permitted")
+        }
+        try {
+            val result = withTimeoutOrNull(6000L) {
             suspendCancellableCoroutine<Map<String, Any>> { continuation ->
                 try {
                     val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -237,13 +261,16 @@ class CameraCapturer @Inject constructor(
             }
         }
 
-        if (result != null && result["success"] == true) {
-            return result
-        }
+            if (result != null && result["success"] == true) {
+                return@withLock result
+            }
 
-        // Camera2 failed or timed out — fallback to Camera1 API
-        Log.w(TAG, "Camera2 returned failure: ${result?.get("error")} — Executing Camera1 fallback (useFront=$useFrontCamera)")
-        return capturePhotoCamera1(useFrontCamera)
+            // Camera2 failed or timed out — fallback to Camera1 API
+            Log.w(TAG, "Camera2 returned failure: ${result?.get("error")} — Executing Camera1 fallback (useFront=$useFrontCamera)")
+            return@withLock capturePhotoCamera1(useFrontCamera)
+        } finally {
+            sessionManager.revokePermit(targetStreamId)
+        }
     }
 
     @Suppress("DEPRECATION")

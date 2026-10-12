@@ -28,6 +28,12 @@ target_link_libraries(opus_decoder_jni PRIVATE
     log
 )
 
+# Ensure 16 KB page size ELF and GNU_RELRO alignment (Android 15+ compatible)
+target_link_options(opus_decoder_jni PRIVATE
+    "-Wl,-z,max-page-size=16384"
+    "-Wl,-z,common-page-size=16384"
+)
+
 # Strip symbols in release for smaller .so
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
     target_link_options(opus_decoder_jni PRIVATE -s)

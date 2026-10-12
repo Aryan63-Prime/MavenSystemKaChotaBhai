@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"github.com/gorilla/websocket"
+	"time"
 )
 
 func (g *Gateway) writeLoop(client *Client) {
@@ -23,6 +24,9 @@ func (g *Gateway) writeLoop(client *Client) {
 			messageType = websocket.TextMessage
 		}
 
+		if err := client.Conn.SetWriteDeadline(time.Now().Add(WriteTimeout)); err != nil {
+			return
+		}
 		if err := client.Conn.WriteMessage(messageType, msg.Payload); err != nil {
 			return
 		}

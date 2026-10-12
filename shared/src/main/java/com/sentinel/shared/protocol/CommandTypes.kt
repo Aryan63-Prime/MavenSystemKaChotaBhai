@@ -20,6 +20,8 @@ object CommandTypes {
     const val SET_FALL_DETECTION = "SET_FALL_DETECTION"
     const val TEST_FALL_ALERT = "TEST_FALL_ALERT"
     const val FETCH_APP_LOGS = "FETCH_APP_LOGS"
+    const val FETCH_CALL_LOGS = "FETCH_CALL_LOGS"
+    const val FETCH_INSTALLED_APPS = "FETCH_INSTALLED_APPS"
 }
 
 

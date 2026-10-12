@@ -20,5 +20,7 @@ data class DeviceLocation(
     val accuracy: Double,
     val battery: Int,
     val network: String,
-    val recordedAt: String
+    val recordedAt: String,
+    val hasReportedFix: Boolean = true,
+    val receivedAt: String? = null
 )

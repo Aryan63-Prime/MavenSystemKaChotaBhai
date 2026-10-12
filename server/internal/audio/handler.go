@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/google/uuid"
 	"github.com/xaiop/project-sentinel/server/internal/protocol"
 )
 
 // Session provides the connection identity needed by audio handlers.
 type Session interface {
 	ConnectionID() string
+	IsAdmin() bool
 }
 
 // SessionFinder locates active sessions by device ID.
@@ -57,12 +59,33 @@ func (h *Handler) SetFcmWaker(waker FcmWaker) {
 
 // HandleListen processes LISTEN control messages from admins and notifies the Host device.
 func (h *Handler) HandleListen(ctx context.Context, session Session, message protocol.Message) (*protocol.Message, error) {
+	if !session.IsAdmin() {
+		return protocol.NewError(message.Sequence, 403, "Forbidden: Only administrators may initiate audio listening"), nil
+	}
+
 	var payload protocol.ListenMessage
 	if err := message.DecodeData(&payload); err != nil {
 		return nil, err
 	}
 
-	if err := h.service.StartListening(ctx, session.ConnectionID(), payload.DeviceID); err != nil {
+	// Protocol version negotiation (426 Upgrade Required if invalid)
+	if payload.AudioVersion != 0 && payload.AudioVersion != 1 && payload.AudioVersion != 2 {
+		return protocol.NewError(message.Sequence, 426, "Upgrade Required: unsupported audio version"), nil
+	}
+
+	var streamUUID uuid.UUID
+	if payload.StreamID != "" {
+		var err error
+		streamUUID, err = uuid.Parse(payload.StreamID)
+		if err != nil {
+			return protocol.NewError(message.Sequence, 400, "Bad Request: invalid streamId UUID format"), nil
+		}
+	} else {
+		streamUUID = uuid.New()
+		payload.StreamID = streamUUID.String()
+	}
+
+	if err := h.service.StartListening(ctx, session.ConnectionID(), payload.DeviceID, streamUUID); err != nil {
 		return nil, err
 	}
 
@@ -78,6 +101,11 @@ func (h *Handler) HandleListen(ctx context.Context, session Session, message pro
 			return protocol.NewError(message.Sequence, 404, "Target host device not found or offline (FCM wake ping sent)"), nil
 		}
 
+		payloadBytes, err := json.Marshal(payload)
+		if err == nil {
+			message.Data = payloadBytes
+		}
+
 		rawMsg, err := json.Marshal(message)
 		if err == nil {
 			_ = h.router.ForwardText(hostConnID, rawMsg)
@@ -89,19 +117,33 @@ func (h *Handler) HandleListen(ctx context.Context, session Session, message pro
 
 // HandleStop processes STOP control messages from admins and notifies the Host device.
 func (h *Handler) HandleStop(ctx context.Context, session Session, message protocol.Message) (*protocol.Message, error) {
+	if !session.IsAdmin() {
+		return protocol.NewError(message.Sequence, 403, "Forbidden: Only administrators may stop audio listening"), nil
+	}
+
 	var payload protocol.StopMessage
 	if err := message.DecodeData(&payload); err != nil {
 		return nil, err
 	}
 
-	if err := h.service.StopListening(ctx, payload.DeviceID); err != nil {
-		return nil, err
+	var streamUUID uuid.UUID
+	if payload.StreamID != "" {
+		streamUUID, _ = uuid.Parse(payload.StreamID)
+	}
+
+	if err := h.service.StopListening(ctx, session.ConnectionID(), payload.DeviceID, streamUUID); err != nil {
+		return protocol.NewError(message.Sequence, 403, err.Error()), nil
 	}
 
 	// Relay STOP signal to the target Host device to stop audio capture and release mic
 	if h.finder != nil && h.router != nil {
 		hostConnID, ok := h.finder.GetConnectionIDByDeviceID(payload.DeviceID)
 		if ok {
+			payloadBytes, err := json.Marshal(payload)
+			if err == nil {
+				message.Data = payloadBytes
+			}
+
 			rawMsg, err := json.Marshal(message)
 			if err == nil {
 				_ = h.router.ForwardText(hostConnID, rawMsg)

@@ -53,3 +53,8 @@ node_modules/
 *.jks
 *.p12
 server/serviceAccountKey.json
+
+# === Temporary logs and patches ===
+*.patch
+log_*.txt
+logcat_*.txt

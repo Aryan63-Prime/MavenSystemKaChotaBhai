@@ -8,7 +8,7 @@ import com.sentinel.shared.protocol.AudioConstants
 import com.sentinel.shared.protocol.PacketType
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExecutorCoroutineDispatcher
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.cancel
@@ -18,6 +18,9 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -74,6 +77,9 @@ open class AudioPipeline(
 
         /** Break capture loop after this many consecutive read errors. */
         private const val MAX_CONSECUTIVE_ERRORS = 5
+
+        /** Bounded timeout for capture loop termination during teardown. */
+        const val SHUTDOWN_TIMEOUT_MS = 1000L
     }
 
     private val _frames = MutableSharedFlow<AudioFrame>(
@@ -91,12 +97,18 @@ open class AudioPipeline(
     private val sequenceNumber = AtomicInteger(0)
 
     private var captureScope: CoroutineScope? = null
+    private var captureJob: Job? = null
+    private var activeStreamId: UUID? = null
+
+    /** Tracks whether the previous session failed to shut down cleanly within timeout. */
+    @Volatile
+    private var isCleanupFailed: Boolean = false
 
     /**
      * The owned ExecutorCoroutineDispatcher — created in [start], closed in [stop].
      * Null when using a test-injected dispatcher or when stopped.
      */
-    private var ownedDispatcher: ExecutorCoroutineDispatcher? = null
+    private var ownedDispatcher: kotlinx.coroutines.ExecutorCoroutineDispatcher? = null
 
     /** Whether the pipeline is currently running. */
     val isRunning: Boolean get() = session.isActive
@@ -111,13 +123,29 @@ open class AudioPipeline(
      * 3. Starts the recorder
      * 4. Begins the capture loop on the audio dispatcher
      *
+     * @param streamId Optional stream UUID for AUDIO_V2 29-byte packet tagging.
      * @return true if the pipeline started successfully.
      */
-    fun start(): Boolean = synchronized(lifecycleLock) {
+    fun start(streamId: UUID? = null): Boolean = synchronized(lifecycleLock) {
+        if (isCleanupFailed || captureJob?.isActive == true) {
+            Log.e(TAG, "Cannot start audio pipeline: previous capture session failed to terminate cleanly")
+            return false
+        }
+
         if (isRunning) {
             Log.w(TAG, "Already running — stopping first")
-            stopInternal()
+            try {
+                stopInternal()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Teardown of running session failed prior to start", t)
+                return false
+            }
+            if (isCleanupFailed) {
+                return false
+            }
         }
+
+        activeStreamId = streamId
 
         // Initialize encoder if it's a NativeOpusEncoder
         if (encoder is NativeOpusEncoder) {
@@ -148,7 +176,7 @@ open class AudioPipeline(
         // Start capture loop on dedicated audio thread
         val scope = CoroutineScope(SupervisorJob() + dispatcher)
         captureScope = scope
-        scope.launch { captureLoop() }
+        captureJob = scope.launch { captureLoop() }
 
         Log.i(TAG, "Audio pipeline started")
         return true
@@ -163,21 +191,98 @@ open class AudioPipeline(
     }
 
     private fun stopInternal() {
-        captureScope?.cancel()
-        captureScope = null
+        val jobToWait = captureJob
+        val scopeToCancel = captureScope
 
-        recorder.stop()
-        encoder.close()
-        session.stop()
+        var firstCleanupError: Throwable? = null
 
-        // Close owned dispatcher — releases the audio thread
-        ownedDispatcher?.close()
-        ownedDispatcher = null
+        // 1. Unblock reading: Call recorder.stop() first.
+        // In Android, AudioRecord.read() in blocking mode blocks until samples are available or
+        // until AudioRecord.stop() is invoked. Stopping the recorder unblocks any in-flight read().
+        try {
+            recorder.stop()
+        } catch (t: Throwable) {
+            firstCleanupError = t
+            Log.e(TAG, "recorder.stop failed during teardown", t)
+        }
 
-        Log.i(TAG, "Audio pipeline stopped (frames=${session.framesEncoded}, " +
-            "drops=${session.droppedFrames}, avgEncode=${session.averageEncodeTimeUs}µs, " +
-            "p99Encode=${session.encodeTimeP99Us}µs, " +
-            "maxEncode=${session.maxEncodeTimeNs / 1000}µs)")
+        // 2. Cancel the capture coroutine scope so the loop breaks immediately upon read() return
+        try {
+            scopeToCancel?.cancel()
+        } catch (t: Throwable) {
+            if (firstCleanupError == null) firstCleanupError = t
+            Log.e(TAG, "captureScope.cancel failed during teardown", t)
+        }
+
+        // 3. Await capture loop completion with a bounded timeout
+        var workerConfirmedTerminated = (jobToWait == null)
+        if (jobToWait != null) {
+            try {
+                runBlocking {
+                    val completed = withTimeoutOrNull(SHUTDOWN_TIMEOUT_MS) {
+                        jobToWait.join()
+                        true
+                    }
+                    if (completed == true) {
+                        workerConfirmedTerminated = true
+                    } else {
+                        Log.e(TAG, "Capture job did not complete within ${SHUTDOWN_TIMEOUT_MS}ms after recorder.stop()")
+                    }
+                }
+            } catch (t: Throwable) {
+                if (firstCleanupError == null) firstCleanupError = t
+                Log.w(TAG, "captureJob join interrupted or failed: ${t.message}")
+            }
+        }
+
+        if (!workerConfirmedTerminated) {
+            // CRITICAL: The capture loop is STILL running or stuck in native HAL, or join threw an exception!
+            // Do NOT close encoder or mark session stopped, as encoder may still be in use!
+            // Preserve the unfinished session, block restart, and record explicit failure.
+            isCleanupFailed = true
+            val terminationError = IllegalStateException("Capture job failed to confirm termination within ${SHUTDOWN_TIMEOUT_MS}ms")
+            if (firstCleanupError == null) firstCleanupError = terminationError
+        } else {
+            // Positively confirmed that capture loop has fully terminated:
+            captureJob = null
+            captureScope = null
+            activeStreamId = null
+            isCleanupFailed = false
+
+            // 4. Safe to close encoder now that capture loop has terminated
+            try {
+                encoder.close()
+            } catch (t: Throwable) {
+                if (firstCleanupError == null) firstCleanupError = t
+                Log.e(TAG, "encoder.close failed during teardown", t)
+            }
+
+            try {
+                session.stop()
+            } catch (t: Throwable) {
+                if (firstCleanupError == null) firstCleanupError = t
+                Log.e(TAG, "session.stop failed during teardown", t)
+            }
+
+            // Close owned dispatcher — releases the audio thread
+            try {
+                ownedDispatcher?.close()
+            } catch (t: Throwable) {
+                if (firstCleanupError == null) firstCleanupError = t
+                Log.e(TAG, "ownedDispatcher.close failed during teardown", t)
+            } finally {
+                ownedDispatcher = null
+            }
+
+            Log.i(TAG, "Audio pipeline stopped (frames=${session.framesEncoded}, " +
+                "drops=${session.droppedFrames}, avgEncode=${session.averageEncodeTimeUs}µs, " +
+                "p99Encode=${session.encodeTimeP99Us}µs, " +
+                "maxEncode=${session.maxEncodeTimeNs / 1000}µs)")
+        }
+
+        if (firstCleanupError != null) {
+            throw firstCleanupError
+        }
     }
 
     /**
@@ -249,11 +354,14 @@ open class AudioPipeline(
 
             // 4. Build AudioFrame (copy opus data — needed for safe Flow emission)
             val opusData = opusBuffer.copyOf(encodedBytes)
+            val currentStreamId = activeStreamId
+            val packetType = if (currentStreamId != null) PacketType.AUDIO_V2 else PacketType.AUDIO
             val frame = AudioFrame(
-                packetType = PacketType.AUDIO,
+                packetType = packetType,
                 sequence = sequenceNumber.getAndIncrement().toLong(),
                 timestamp = System.currentTimeMillis(),
-                opusData = opusData
+                opusData = opusData,
+                streamId = currentStreamId
             )
 
             // 5. Emit frame (DROP_OLDEST if consumer is slow)

@@ -466,15 +466,18 @@ class ConnectionSupervisorTest {
         startAndActivate()
         var requestedSeq: Long? = null
         var requestedDev: String? = null
-        supervisor.onStartAudioRequested = { seq, dev ->
+        var requestedStream: String? = null
+        supervisor.onStartAudioRequested = { seq, dev, streamId, _ ->
             requestedSeq = seq
             requestedDev = dev
+            requestedStream = streamId
         }
 
-        emit(ConnectionEvent.StartAudio(sequence = 99L, deviceId = "HOST-001"))
+        emit(ConnectionEvent.StartAudio(sequence = 99L, deviceId = "HOST-001", streamId = "test-uuid"))
 
         assertEquals(99L, requestedSeq)
         assertEquals("HOST-001", requestedDev)
+        assertEquals("test-uuid", requestedStream)
     }
 
     @Test
@@ -482,15 +485,18 @@ class ConnectionSupervisorTest {
         startAndActivate()
         var requestedSeq: Long? = null
         var requestedDev: String? = null
-        supervisor.onStopAudioRequested = { seq, dev ->
+        var requestedStream: String? = null
+        supervisor.onStopAudioRequested = { seq, dev, streamId ->
             requestedSeq = seq
             requestedDev = dev
+            requestedStream = streamId
         }
 
-        emit(ConnectionEvent.StopAudio(sequence = 100L, deviceId = "HOST-001"))
+        emit(ConnectionEvent.StopAudio(sequence = 100L, deviceId = "HOST-001", streamId = "test-uuid"))
 
         assertEquals(100L, requestedSeq)
         assertEquals("HOST-001", requestedDev)
+        assertEquals("test-uuid", requestedStream)
     }
 
     @Test
@@ -529,11 +535,14 @@ internal class FakeConnectionRepository(
 internal class FakeSessionManager : SessionManager {
     var savedUrl: String? = null
     var savedToken: String? = null
+    var isApproved: Boolean = true
     override fun saveToken(token: String) { savedToken = token }
     override fun getToken(): String? = savedToken
     override fun clearToken() { savedToken = null }
     override fun saveServerUrl(url: String) { savedUrl = url }
     override fun getServerUrl(): String? = savedUrl
+    override fun setEnrollmentApproved(approved: Boolean) { isApproved = approved }
+    override fun isEnrollmentApproved(): Boolean = isApproved
     override fun hasSession(): Boolean = savedToken != null && savedUrl != null
     override fun clear() { savedToken = null; savedUrl = null }
 }

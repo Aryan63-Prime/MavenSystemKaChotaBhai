@@ -217,8 +217,14 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
-	if _, err := h.authenticator.Authenticate(token); err != nil {
+	identity, err := h.authenticator.Authenticate(token)
+	if err != nil {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return false
+	}
+
+	if !auth.IsAdminIdentity(identity) {
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return false
 	}
 

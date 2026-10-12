@@ -23,13 +23,20 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import com.google.android.gms.common.api.ResolvableApiException
 import com.google.android.gms.location.*
 import com.sentinel.host.domain.model.LocationConfig
+import com.sentinel.host.domain.session.SessionManager
 import com.sentinel.host.service.SentinelForegroundService
+import com.sentinel.host.ui.permissions.PermissionScreen
 import com.sentinel.host.util.OemBatteryOptimizer
 import com.sentinel.host.worker.SentinelWatchdogWorker
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -37,6 +44,9 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val TAG = "Sentinel:Main"
     }
+
+    @Inject
+    lateinit var sessionManager: SessionManager
 
     // Step 1: Request foreground location + microphone + notifications
     private val corePermissionLauncher = registerForActivityResult(
@@ -94,11 +104,29 @@ class MainActivity : ComponentActivity() {
         })
 
         setContent {
-            SentinelHostApp()
+            var hasApproval by remember { mutableStateOf(sessionManager.isEnrollmentApproved()) }
+
+            if (!hasApproval) {
+                PermissionScreen(
+                    onAllGranted = {
+                        sessionManager.setEnrollmentApproved(true)
+                        hasApproval = true
+                        checkLocationSettings()
+                        checkStoragePermission()
+                        requestBackgroundLocation()
+                        requestBatteryOptimization()
+                        startSentinelService()
+                    }
+                )
+            } else {
+                SentinelHostApp()
+            }
         }
 
-        // Request permissions first, then start service
-        requestAllPermissions()
+        // Only request batch permissions and start service if on-device approval already exists
+        if (sessionManager.isEnrollmentApproved()) {
+            requestAllPermissions()
+        }
     }
 
     private fun requestAllPermissions() {
@@ -206,11 +234,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /**
-     * Starts the foreground service which handles connection, location, and audio,
-     * and schedules the WorkManager watchdog.
-     */
     private fun startSentinelService() {
+        if (!sessionManager.isEnrollmentApproved()) {
+            Log.w(TAG, "Not starting SentinelForegroundService: User on-device enrollment approval not yet granted")
+            return
+        }
         SentinelWatchdogWorker.schedule(this)
         SentinelForegroundService.Start(this)
         Log.i(TAG, "SentinelForegroundService and WorkManager watchdog started successfully")

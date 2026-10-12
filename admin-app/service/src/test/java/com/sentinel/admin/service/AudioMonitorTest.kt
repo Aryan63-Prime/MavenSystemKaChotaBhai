@@ -135,6 +135,36 @@ class AudioMonitorTest {
         return buffer.array()
     }
 
+    private fun buildValidFrameV2(streamId: java.util.UUID, sequence: Long, timestamp: Long, payload: ByteArray): ByteArray {
+        val buffer = ByteBuffer.allocate(AudioConstants.HEADER_V2_SIZE + payload.size)
+            .order(ByteOrder.BIG_ENDIAN)
+        buffer.put(PacketType.AUDIO_V2)
+        buffer.putLong(streamId.mostSignificantBits)
+        buffer.putLong(streamId.leastSignificantBits)
+        buffer.putInt(sequence.toInt())
+        buffer.putLong(timestamp)
+        buffer.put(payload)
+        return buffer.array()
+    }
+
+    @Test
+    fun `onBinaryFrame rejects stale AUDIO_V2 frame from mismatched streamId`() = runTest(testDispatcher) {
+        val activeUuid = java.util.UUID.randomUUID()
+        val staleUuid = java.util.UUID.randomUUID()
+        monitor.start("HOST-0001", activeUuid)
+
+        val staleFrame = buildValidFrameV2(staleUuid, 1, 1000L, byteArrayOf(0x01, 0x02))
+        monitor.onBinaryFrame(staleFrame)
+
+        assertEquals(0L, monitor.statistics.value.framesReceived)
+        assertEquals(1L, monitor.statistics.value.framesDropped)
+
+        val matchingFrame = buildValidFrameV2(activeUuid, 2, 1020L, byteArrayOf(0x03, 0x04))
+        monitor.onBinaryFrame(matchingFrame)
+
+        assertEquals(1L, monitor.statistics.value.framesReceived)
+    }
+
     // ============================================================
     // Fake AudioOutput
     // ============================================================

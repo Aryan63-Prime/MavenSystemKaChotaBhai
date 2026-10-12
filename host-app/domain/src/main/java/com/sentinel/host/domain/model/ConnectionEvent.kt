@@ -22,8 +22,17 @@ sealed interface ConnectionEvent {
     data class FileStopReq(val sequence: Long, val path: String) : ConnectionEvent
 
     // Audio on-demand session events
-    data class StartAudio(val sequence: Long, val deviceId: String) : ConnectionEvent
-    data class StopAudio(val sequence: Long, val deviceId: String) : ConnectionEvent
+    data class StartAudio(
+        val sequence: Long,
+        val deviceId: String,
+        val streamId: String? = null,
+        val maxDurationSeconds: Long? = null
+    ) : ConnectionEvent
+    data class StopAudio(
+        val sequence: Long,
+        val deviceId: String,
+        val streamId: String? = null
+    ) : ConnectionEvent
 
     // Sprint A6: Reconnection events
     data class Reconnecting(val attempt: Int, val delayMs: Long) : ConnectionEvent

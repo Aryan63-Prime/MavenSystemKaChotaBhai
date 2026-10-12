@@ -54,3 +54,8 @@ func (s *Service) Authenticate(token string) (string, error) {
 
 	return claims.DeviceID, nil
 }
+
+// IsAdminIdentity checks the namespace assigned by the trusted token issuer.
+func IsAdminIdentity(identity string) bool {
+	return strings.HasPrefix(identity, "ADMIN-") && len(identity) > len("ADMIN-")
+}

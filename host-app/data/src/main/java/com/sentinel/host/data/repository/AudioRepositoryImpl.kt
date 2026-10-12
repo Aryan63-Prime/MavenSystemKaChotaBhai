@@ -7,6 +7,7 @@ import com.sentinel.host.domain.model.AudioFrame
 import com.sentinel.host.domain.repository.AudioRepository
 import com.sentinel.host.domain.repository.ConnectionRepository
 import kotlinx.coroutines.flow.Flow
+import java.util.UUID
 
 /**
  * Sends encoded audio frames as binary WebSocket packets.
@@ -36,9 +37,9 @@ open class AudioRepositoryImpl(
     @Volatile
     var isMuted: Boolean = false
 
-    override fun startCapture(): Flow<AudioFrame> {
-        pipeline.start()
-        Log.i(TAG, "Audio capture started")
+    override fun startCapture(streamId: UUID?): Flow<AudioFrame> {
+        pipeline.start(streamId)
+        Log.i(TAG, "Audio capture started (streamId=$streamId)")
         return pipeline.frames
     }
 

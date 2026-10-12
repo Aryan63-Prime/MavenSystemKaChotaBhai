@@ -48,15 +48,24 @@ class MessageSerializer(private val moshi: Moshi = Moshi.Builder().build()) {
         }
     }
 
-    fun serializeListen(deviceId: String, sequence: Long): String {
+    fun serializeListen(
+        deviceId: String,
+        sequence: Long,
+        streamId: String? = null,
+        audioVersion: Int = 2
+    ): String {
         return buildEnvelope(MessageType.LISTEN, sequence) { writer ->
-            listenDataAdapter.toJson(writer, ListenDataJson(deviceId))
+            listenDataAdapter.toJson(writer, ListenDataJson(deviceId, streamId, audioVersion))
         }
     }
 
-    fun serializeStop(deviceId: String, sequence: Long): String {
+    fun serializeStop(
+        deviceId: String,
+        sequence: Long,
+        streamId: String? = null
+    ): String {
         return buildEnvelope(MessageType.STOP, sequence) { writer ->
-            stopDataAdapter.toJson(writer, StopDataJson(deviceId))
+            stopDataAdapter.toJson(writer, StopDataJson(deviceId, streamId))
         }
     }
 

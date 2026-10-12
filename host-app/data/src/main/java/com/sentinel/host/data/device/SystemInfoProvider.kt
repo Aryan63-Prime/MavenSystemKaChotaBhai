@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
@@ -13,11 +14,14 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.math.abs
 
 @Singleton
 class SystemInfoProvider @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val hardwareInfoProvider: HardwareInfoProvider
+    private val hardwareInfoProvider: HardwareInfoProvider,
+    private val rootDetectionManager: RootDetectionManager,
+    private val securitySettingsMonitor: SecuritySettingsMonitor
 ) {
     fun getSystemInfo(): Map<String, Any> {
         val hw = hardwareInfoProvider.getHardwareInfo()
@@ -46,17 +50,33 @@ class SystemInfoProvider @Inject constructor(
                 plugged == BatteryManager.BATTERY_PLUGGED_USB ||
                 plugged == BatteryManager.BATTERY_PLUGGED_WIRELESS
 
+        // Instantaneous battery current & power
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
+        val currentNowUa = bm?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CURRENT_NOW) ?: 0
+        val voltageMv = batteryStatus?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
+        val powerWatts = if (voltageMv > 0 && currentNowUa != 0) {
+            (voltageMv / 1000.0) * (abs(currentNowUa) / 1_000_000.0)
+        } else {
+            0.0
+        }
+
+        // Wi-Fi and Gateway info
+        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        val wifiInfo = wifiManager?.connectionInfo
         val ssid = try {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            val wifiInfo = wifiManager?.connectionInfo
             val s = wifiInfo?.ssid?.replace("\"", "") ?: "Unknown"
             if (s == "<unknown ssid>") "Connected" else s
         } catch (_: Exception) {
             "Connected"
         }
 
-        val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-        val wifiInfo = wifiManager?.connectionInfo
+        val wifiBssid = try {
+            val b = wifiInfo?.bssid ?: "N/A"
+            if (b == "02:00:00:00:00:00" || b == "<unknown bssid>") "N/A" else b
+        } catch (_: Exception) {
+            "N/A"
+        }
+
         val wifiFrequency = wifiInfo?.frequency ?: 0
         val wifiBand = when {
             wifiFrequency > 5925 -> "6 GHz (Wi-Fi 6E/7)"
@@ -77,12 +97,18 @@ class SystemInfoProvider @Inject constructor(
             )
         } else "N/A"
 
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val activeNet = cm?.activeNetwork
+        val linkProps = cm?.getLinkProperties(activeNet)
+        val gatewayIp = linkProps?.routes?.firstOrNull { it.isDefaultRoute }?.gateway?.hostAddress ?: "N/A"
+        val dnsServers = linkProps?.dnsServers?.mapNotNull { it.hostAddress }?.joinToString(", ")?.ifBlank { "N/A" } ?: "N/A"
+        val networkInterface = linkProps?.interfaceName ?: "wlan0"
+
         val telephonyManager = context.getSystemService(Context.TELEPHONY_SERVICE) as? android.telephony.TelephonyManager
         val carrier = telephonyManager?.networkOperatorName?.ifBlank { null }
             ?: telephonyManager?.simOperatorName?.ifBlank { null }
             ?: "Cellular"
 
-        val voltageMv = batteryStatus?.getIntExtra(BatteryManager.EXTRA_VOLTAGE, -1) ?: -1
         val batteryHealth = when (batteryStatus?.getIntExtra(BatteryManager.EXTRA_HEALTH, -1)) {
             BatteryManager.BATTERY_HEALTH_GOOD -> "Good"
             BatteryManager.BATTERY_HEALTH_OVERHEAT -> "Overheat"
@@ -100,6 +126,7 @@ class SystemInfoProvider @Inject constructor(
                 android.os.PowerManager.THERMAL_STATUS_MODERATE -> "Moderate Throttling"
                 android.os.PowerManager.THERMAL_STATUS_SEVERE -> "Severe Throttling"
                 android.os.PowerManager.THERMAL_STATUS_CRITICAL -> "Critical Thermal"
+                android.os.PowerManager.THERMAL_STATUS_EMERGENCY -> "Emergency Shutdown"
                 else -> "Nominal"
             }
         } else "Nominal"
@@ -111,6 +138,29 @@ class SystemInfoProvider @Inject constructor(
         } catch (_: Exception) {
             System.getProperty("os.version") ?: "Linux"
         }
+
+        // POSIX Uname
+        val uts = try {
+            android.system.Os.uname()
+        } catch (_: Throwable) {
+            null
+        }
+        val unameSysname = uts?.sysname ?: "Linux"
+        val unameRelease = uts?.release ?: kernelVersion
+        val unameMachine = uts?.machine ?: Build.SUPPORTED_ABIS.firstOrNull() ?: "aarch64"
+        val unameVersion = uts?.version ?: ""
+
+        // SELinux enforcement
+        val isSelinuxEnforced = try {
+            val clazz = Class.forName("android.os.SELinux")
+            clazz.getMethod("isSELinuxEnforced").invoke(null) as Boolean
+        } catch (_: Throwable) {
+            true
+        }
+
+        // Root detection & Security posture
+        val rootResult = rootDetectionManager.checkRoot()
+        val secSnapshot = securitySettingsMonitor.getSnapshot()
 
         val uptimeMillis = android.os.SystemClock.elapsedRealtime()
         val uptimeHours = uptimeMillis / (1000 * 60 * 60)
@@ -129,15 +179,38 @@ class SystemInfoProvider @Inject constructor(
             "batteryVoltageMv" to voltageMv,
             "batteryHealth" to batteryHealth,
             "batteryTech" to batteryTech,
+            "batteryCurrentUa" to currentNowUa,
+            "batteryPowerWatts" to String.format(java.util.Locale.US, "%.2f W", powerWatts),
             "isCharging" to isCharging,
             "wifiSsid" to ssid,
+            "wifiBssid" to wifiBssid,
             "wifiBand" to wifiBand,
             "wifiLinkSpeed" to wifiLinkSpeed,
             "localIp" to localIp,
+            "gatewayIp" to gatewayIp,
+            "dnsServers" to dnsServers,
+            "networkInterface" to networkInterface,
             "carrier" to carrier,
             "thermalStatus" to thermalStatus,
             "cpuCores" to cpuCores,
             "kernelVersion" to kernelVersion,
+            "unameSysname" to unameSysname,
+            "unameRelease" to unameRelease,
+            "unameMachine" to unameMachine,
+            "unameVersion" to unameVersion,
+            "isSelinuxEnforced" to isSelinuxEnforced,
+            "isRooted" to rootResult.isRooted,
+            "rootScore" to rootResult.rootScore,
+            "rootVectors" to rootResult.detectedVectors,
+            "isAdbEnabled" to secSnapshot.isAdbEnabled,
+            "isDeveloperOptionsEnabled" to secSnapshot.isDeveloperOptionsEnabled,
+            "isUsbConnected" to secSnapshot.isUsbConnected,
+            "isUsbConfigured" to secSnapshot.isUsbConfigured,
+            "isUsbAdbActive" to secSnapshot.isUsbAdbActive,
+            "isWirelessAdbEnabled" to secSnapshot.isWirelessAdbEnabled,
+            "isMockLocationEnabled" to secSnapshot.isMockLocationEnabled,
+            "bootloader" to Build.BOOTLOADER,
+            "radioVersion" to (Build.getRadioVersion() ?: "N/A"),
             "systemUptime" to uptimeStr,
             "cpuUsage" to "${getSampleCpuUsage()}%",
             "hardwareId" to hw.hardwareId,

@@ -12,7 +12,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Reads contacts and emergency details from the host device via [ContactsContract].
+ * Reads contacts, emails, ICE tags, and emergency details from the host device via [ContactsContract].
+ * Features pagination, email association, and deduplication.
  */
 @Singleton
 class ContactsManager @Inject constructor(
@@ -34,12 +35,15 @@ class ContactsManager @Inject constructor(
      * Returns a map containing:
      * - "permissionGranted": Boolean
      * - "total": Int
+     * - "returned": Int
+     * - "offset": Int
      * - "contacts": List<Map<String, String>>
      * - "emergencyContact": Map<String, String>? (if ICE/Emergency match found)
      *
      * @param limit Maximum contacts to return. 0 or negative means fetch all contacts.
+     * @param offset Number of contacts to skip for pagination.
      */
-    fun getContacts(limit: Int = 0): Map<String, Any?> {
+    fun getContacts(limit: Int = 0, offset: Int = 0): Map<String, Any?> {
         val result = mutableMapOf<String, Any?>()
 
         if (!hasContactsPermission()) {
@@ -74,45 +78,55 @@ class ContactsManager @Inject constructor(
             )
 
             cursor?.let { c ->
+                val idIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.CONTACT_ID)
                 val nameIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
                 val numberIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER)
                 val typeIndex = c.getColumnIndex(ContactsContract.CommonDataKinds.Phone.TYPE)
 
-                var count = 0
+                var matchedCount = 0
                 val seenNumbers = mutableSetOf<String>()
 
-                while (c.moveToNext() && (limit <= 0 || count < limit)) {
-                    val name = if (nameIndex >= 0) c.getString(nameIndex) ?: "" else ""
+                while (c.moveToNext()) {
                     val rawNumber = if (numberIndex >= 0) c.getString(numberIndex) ?: "" else ""
                     val cleanNumber = rawNumber.replace("\\s+".toRegex(), "")
 
                     if (cleanNumber.isNotBlank() && !seenNumbers.contains(cleanNumber)) {
                         seenNumbers.add(cleanNumber)
-                        val typeCode = if (typeIndex >= 0) c.getInt(typeIndex) else ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
-                        val typeStr = when (typeCode) {
-                            ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE -> "Mobile"
-                            ContactsContract.CommonDataKinds.Phone.TYPE_HOME -> "Home"
-                            ContactsContract.CommonDataKinds.Phone.TYPE_WORK -> "Work"
-                            else -> "Other"
+
+                        if (matchedCount >= offset && (limit <= 0 || contactsList.size < limit)) {
+                            val contactId = if (idIndex >= 0) c.getString(idIndex) ?: "" else ""
+                            val name = if (nameIndex >= 0) c.getString(nameIndex) ?: "" else ""
+                            val typeCode = if (typeIndex >= 0) c.getInt(typeIndex) else ContactsContract.CommonDataKinds.Phone.TYPE_OTHER
+                            val typeStr = when (typeCode) {
+                                ContactsContract.CommonDataKinds.Phone.TYPE_MOBILE -> "Mobile"
+                                ContactsContract.CommonDataKinds.Phone.TYPE_HOME -> "Home"
+                                ContactsContract.CommonDataKinds.Phone.TYPE_WORK -> "Work"
+                                else -> "Other"
+                            }
+
+                            val isIce = name.contains("ICE", ignoreCase = true) ||
+                                    name.contains("Emergency", ignoreCase = true)
+
+                            val email = if (contactId.isNotBlank()) getContactEmail(contactId) else ""
+
+                            val entry = mutableMapOf(
+                                "id" to contactId,
+                                "name" to name,
+                                "phone" to rawNumber,
+                                "type" to typeStr,
+                                "email" to email,
+                                "isEmergency" to isIce.toString()
+                            )
+                            contactsList.add(entry)
+
+                            if (isIce && emergencyContact == null) {
+                                emergencyContact = entry
+                            }
                         }
-
-                        val isIce = name.contains("ICE", ignoreCase = true) ||
-                                name.contains("Emergency", ignoreCase = true)
-
-                        val entry = mapOf(
-                            "name" to name,
-                            "phone" to rawNumber,
-                            "type" to typeStr,
-                            "isEmergency" to isIce.toString()
-                        )
-                        contactsList.add(entry)
-                        count++
-
-                        if (isIce && emergencyContact == null) {
-                            emergencyContact = entry
-                        }
+                        matchedCount++
                     }
                 }
+                result["total"] = seenNumbers.size
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to query contacts: ${e.message}", e)
@@ -121,12 +135,33 @@ class ContactsManager @Inject constructor(
             cursor?.close()
         }
 
-        result["total"] = contactsList.size
+        result["returned"] = contactsList.size
+        result["offset"] = offset
         result["contacts"] = contactsList
         emergencyContact?.let {
             result["emergencyContact"] = it
         }
 
         return result
+    }
+
+    private fun getContactEmail(contactId: String): String {
+        var emailCursor: Cursor? = null
+        return try {
+            emailCursor = context.contentResolver.query(
+                ContactsContract.CommonDataKinds.Email.CONTENT_URI,
+                arrayOf(ContactsContract.CommonDataKinds.Email.DATA),
+                "${ContactsContract.CommonDataKinds.Email.CONTACT_ID} = ?",
+                arrayOf(contactId),
+                null
+            )
+            if (emailCursor != null && emailCursor.moveToFirst()) {
+                emailCursor.getString(0) ?: ""
+            } else ""
+        } catch (_: Exception) {
+            ""
+        } finally {
+            emailCursor?.close()
+        }
     }
 }

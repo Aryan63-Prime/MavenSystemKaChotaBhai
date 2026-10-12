@@ -93,8 +93,8 @@ class ConnectionSupervisor(
     private var heartbeatObserveJob: Job? = null
 
     /** Callbacks for on-demand audio streaming session lifecycle. */
-    var onStartAudioRequested: ((sequence: Long, deviceId: String) -> Unit)? = null
-    var onStopAudioRequested: ((sequence: Long, deviceId: String) -> Unit)? = null
+    var onStartAudioRequested: ((sequence: Long, deviceId: String, streamId: String?, maxDurationSeconds: Long?) -> Unit)? = null
+    var onStopAudioRequested: ((sequence: Long, deviceId: String, streamId: String?) -> Unit)? = null
 
     /** True when the user explicitly called [stop]. Prevents auto-reconnect. */
     @Volatile
@@ -186,14 +186,14 @@ class ConnectionSupervisor(
             }
 
             is ConnectionEvent.StartAudio -> {
-                Log.i(TAG, "StartAudio event received from server (seq=${event.sequence}, dev=${event.deviceId})")
-                onStartAudioRequested?.invoke(event.sequence, event.deviceId)
+                Log.i(TAG, "StartAudio event received from server (seq=${event.sequence}, dev=${event.deviceId}, streamId=${event.streamId})")
+                onStartAudioRequested?.invoke(event.sequence, event.deviceId, event.streamId, event.maxDurationSeconds)
                 previousState
             }
 
             is ConnectionEvent.StopAudio -> {
-                Log.i(TAG, "StopAudio event received from server (seq=${event.sequence}, dev=${event.deviceId})")
-                onStopAudioRequested?.invoke(event.sequence, event.deviceId)
+                Log.i(TAG, "StopAudio event received from server (seq=${event.sequence}, dev=${event.deviceId}, streamId=${event.streamId})")
+                onStopAudioRequested?.invoke(event.sequence, event.deviceId, event.streamId)
                 previousState
             }
 

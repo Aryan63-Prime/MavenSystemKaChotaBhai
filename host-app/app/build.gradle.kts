@@ -42,6 +42,10 @@ android {
         buildConfig = true
     }
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -91,5 +95,7 @@ dependencies {
 
     // Testing
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.mockito:mockito-core:5.14.2")
+    testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

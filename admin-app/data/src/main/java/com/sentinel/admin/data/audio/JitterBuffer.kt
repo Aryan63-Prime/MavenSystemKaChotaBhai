@@ -28,14 +28,18 @@ class JitterBuffer(
     private val minDepth: Int = 2,
     private val maxDepth: Int = 5,
     private val maxLateDistance: Int = 10,
+    private val maxPlcGap: Int = 10,
     private val stableThreshold: Int = 50
 ) {
     private val lock = Any()
 
     private val buffer = TreeMap<Long, ByteArray>()
 
-    /** Next expected sequence for playback. */
+    /** Next expected unwrapped sequence for playback. */
     private var playbackHead: Long = -1L
+
+    /** Highest unwrapped sequence seen so far for monotonic wire sequencing. */
+    private var highestUnwrapped: Long = -1L
 
     /** Current adaptive target depth. */
     private var targetDepth: Int = minDepth
@@ -88,30 +92,50 @@ class JitterBuffer(
     fun push(sequence: Long, payload: ByteArray): PushResult = synchronized(lock) {
         _received++
 
+        val wireSeq = sequence and 0xFFFFFFFFL
+        val unwrapped = if (playbackHead < 0L && buffer.isEmpty()) {
+            highestUnwrapped = wireSeq
+            wireSeq
+        } else {
+            val lastWire = highestUnwrapped and 0xFFFFFFFFL
+            val diff = ((wireSeq - lastWire).toInt()).toLong()
+            highestUnwrapped + diff
+        }
+
         // Check for duplicate (always, regardless of playback state)
-        if (buffer.containsKey(sequence)) {
+        if (buffer.containsKey(unwrapped)) {
             _droppedDuplicate++
             return PushResult.DUPLICATE
         }
 
-        // Late-packet check only applies after playback has started
-        if (playbackHead >= 0) {
-            val distance = sequenceDistance(sequence, playbackHead)
+        // Late-packet check (applies both before and after playback starts)
+        if (playbackHead >= 0L) {
+            val distance = unwrapped - playbackHead
             if (distance < -maxLateDistance) {
+                _droppedLate++
+                return PushResult.LATE
+            }
+        } else {
+            // Before playback has started, reject packets older than maxLateDistance relative to highestUnwrapped
+            if (highestUnwrapped >= 0L && (unwrapped - highestUnwrapped) < -maxLateDistance) {
                 _droppedLate++
                 return PushResult.LATE
             }
         }
 
         // Detect jitter (out-of-order arrival)
-        if (buffer.isNotEmpty() && sequence < buffer.lastKey()) {
+        if (buffer.isNotEmpty() && unwrapped < buffer.lastKey()) {
             consecutiveInOrder = 0
             if (targetDepth < maxDepth) {
                 targetDepth = (targetDepth + 1).coerceAtMost(maxDepth)
             }
         }
 
-        buffer[sequence] = payload
+        if (unwrapped > highestUnwrapped) {
+            highestUnwrapped = unwrapped
+        }
+
+        buffer[unwrapped] = payload
         return PushResult.ACCEPTED
     }
 
@@ -128,7 +152,7 @@ class JitterBuffer(
         if (buffer.isEmpty()) return PopResult.Empty
 
         // Initialize playback head on first pop — uses smallest buffered sequence
-        if (playbackHead < 0) {
+        if (playbackHead < 0L) {
             playbackHead = buffer.firstKey()
         }
 
@@ -139,7 +163,7 @@ class JitterBuffer(
         if (firstKey == playbackHead) {
             val payload = buffer.remove(firstKey) ?: return PopResult.Empty
             _delivered++
-            playbackHead = nextSequence(playbackHead)
+            playbackHead++
 
             // Track stability for adaptive shrinking
             consecutiveInOrder++
@@ -148,14 +172,23 @@ class JitterBuffer(
                 consecutiveInOrder = 0
             }
 
-            return PopResult.Frame(firstKey, payload)
+            return PopResult.Frame(firstKey and 0xFFFFFFFFL, payload)
         }
 
         // If the first buffered frame is ahead of playback head, there's a gap
-        val gap = sequenceDistance(firstKey, playbackHead)
-        if (gap > 0) {
-            val missing = playbackHead
-            playbackHead = nextSequence(playbackHead)
+        val gap = firstKey - playbackHead
+        if (gap > 0L) {
+            if (gap > maxPlcGap) {
+                // Gap is too large for concealment. Fast-forward playback head to firstKey
+                playbackHead = firstKey
+                val payload = buffer.remove(firstKey) ?: return PopResult.Empty
+                _delivered++
+                playbackHead++
+                consecutiveInOrder = 0
+                return PopResult.Frame(firstKey and 0xFFFFFFFFL, payload)
+            }
+            val missing = playbackHead and 0xFFFFFFFFL
+            playbackHead++
             return PopResult.Missing(missing)
         }
 
@@ -193,6 +226,7 @@ class JitterBuffer(
     fun clear() = synchronized(lock) {
         buffer.clear()
         playbackHead = -1L
+        highestUnwrapped = -1L
         targetDepth = minDepth
         consecutiveInOrder = 0
     }

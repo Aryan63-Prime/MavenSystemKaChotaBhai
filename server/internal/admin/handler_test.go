@@ -133,11 +133,15 @@ func TestHandlerRejectsNonGET(t *testing.T) {
 }
 
 type fakeAuthenticator struct {
+	identity   string
 	authorized bool
 }
 
 func (a fakeAuthenticator) Authenticate(token string) (string, error) {
 	if a.authorized && token == "valid-token" {
+		if a.identity != "" {
+			return a.identity, nil
+		}
 		return "ADMIN-0001", nil
 	}
 
@@ -151,4 +155,15 @@ type fakeUnauthorizedError struct {
 
 func (e *fakeUnauthorizedError) Error() string {
 	return "unauthorized"
+}
+
+func TestHostCredentialCannotReadAdminFleet(t *testing.T) {
+	h := NewHandler(NewService(&fakeSessionSource{}, &fakeLocationReader{}, fakeHeartbeatPolicy{}), fakeAuthenticator{authorized: true, identity: "HOST-0001"})
+	req := httptest.NewRequest(http.MethodGet, "/devices", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	rec := httptest.NewRecorder()
+	h.ListDevices(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for host token, got %d", rec.Code)
+	}
 }

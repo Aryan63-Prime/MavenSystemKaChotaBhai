@@ -1,10 +1,12 @@
 package device
 
 import (
+	"context"
 	"errors"
 	"strings"
 
 	"github.com/xaiop/project-sentinel/server/internal/protocol"
+	"github.com/xaiop/project-sentinel/server/internal/repository"
 )
 
 var (
@@ -18,10 +20,31 @@ var (
 )
 
 type Service struct {
+	repo repository.DeviceRepository
 }
 
 func NewService() *Service {
 	return &Service{}
+}
+
+func NewServiceWithRepository(repo repository.DeviceRepository) *Service {
+	return &Service{repo: repo}
+}
+
+func (s *Service) SetRepository(repo repository.DeviceRepository) {
+	s.repo = repo
+}
+
+func (s *Service) EnrollDevice(ctx context.Context, msg protocol.RegisterMessage) error {
+	if s.repo == nil {
+		return nil
+	}
+	return s.repo.SaveEnrolledDevice(ctx, repository.EnrolledDevice{
+		DeviceID:   msg.DeviceID,
+		DeviceName: msg.DeviceName,
+		AppVersion: msg.AppVersion,
+		Model:      msg.Model,
+	})
 }
 
 func (s *Service) ValidateRegistration(message protocol.RegisterMessage, authenticatedDeviceID string, alreadyRegistered bool) error {

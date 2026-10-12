@@ -1,6 +1,9 @@
 package bootstrap
 
 import (
+	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/xaiop/project-sentinel/server/internal/admin"
@@ -36,9 +39,25 @@ func Build() (*app.Application, error) {
 		return nil, err
 	}
 
+	var deviceRepo repository.DeviceRepository
+	var pgDB *database.PostgresDB
+	if postgresConfigured(cfg.Database) {
+		db, err := database.NewPostgresDB(cfg.Database, log)
+		if err != nil {
+			return nil, fmt.Errorf("initialize postgres database: %w", err)
+		}
+		pgDB = db
+		deviceRepo = repository.NewPostgresDeviceRepository(db.DB())
+		log.Info("PostgreSQL durable device enrollment and token storage active")
+	} else {
+		log.Info("PostgreSQL not configured, using in-memory device repository")
+		deviceRepo = repository.NewMemoryDeviceRepository()
+	}
+
 	authService := auth.New(cfg.JWT.Secret)
 	authHandler := auth.NewHandler(authService)
-	deviceHandler := device.NewHandler(device.NewService())
+	deviceService := device.NewServiceWithRepository(deviceRepo)
+	deviceHandler := device.NewHandler(deviceService)
 	heartbeatService := heartbeat.NewService()
 	heartbeatHandler := heartbeat.NewHandler(heartbeatService)
 	redisClient := database.NewRedisClient(database.RedisOptions{
@@ -50,6 +69,7 @@ func Build() (*app.Application, error) {
 	locationRepository := repository.NewRedisLocationRepository(redisClient, time.Duration(cfg.Redis.LocationTTLSeconds)*time.Second)
 	locationService := location.NewServiceWithDependencies(locationRepository, nil, nil)
 	locationHandler := location.NewHandler(locationService)
+	locationHandler.SetBatteryLogger(deviceRepo)
 	listenerRepository := repository.NewRedisListenerRepository(redisClient)
 	audioService := audio.NewService(listenerRepository, nil)
 	audioHandler := audio.NewHandler(audioService)
@@ -74,6 +94,7 @@ func Build() (*app.Application, error) {
 	if fcmErr != nil {
 		log.Warn("FCM service initialization failed", zap.Error(fcmErr))
 	} else if fcmService != nil {
+		fcmService.SetTokenStore(deviceRepo)
 		dispatch.SetFcmRegistrar(fcmService)
 		commandHandler.SetFcmWaker(fcmService)
 		audioHandler.SetFcmWaker(fcmService)
@@ -82,8 +103,9 @@ func Build() (*app.Application, error) {
 	dispatch.SetBroadcaster(gw)
 	audioService.SetForwarder(gw)
 	fileService.SetForwarder(gw)
-	gw.SetHealthService(health.NewService(componentCheckers(cfg, redisClient)...))
+	gw.SetHealthService(health.NewService(componentCheckers(cfg, redisClient, pgDB)...))
 	adminService := admin.NewService(adminSessionSource{gateway: gw}, locationRepository, heartbeatService)
+	adminService.SetEnrolledDeviceSource(deviceRepo)
 	if fcmService != nil {
 		adminService.SetFcmService(fcmService)
 	}
@@ -99,6 +121,9 @@ func Build() (*app.Application, error) {
 		Gateway: gw,
 	}
 	application.RegisterCloser(redisClient)
+	if pgDB != nil {
+		application.RegisterCloser(pgDB)
+	}
 
 	return application, nil
 }
@@ -141,12 +166,14 @@ func toAdminSessionSnapshot(snapshot gateway.SessionSnapshot) admin.SessionSnaps
 	}
 }
 
-func componentCheckers(cfg *config.Config, redisClient *database.RedisClient) []health.Checker {
+func componentCheckers(cfg *config.Config, redisClient *database.RedisClient, pgDB *database.PostgresDB) []health.Checker {
 	checkers := []health.Checker{
 		health.NewPingChecker("redis", redisClient),
 	}
 
-	if postgresConfigured(cfg.Database) {
+	if pgDB != nil {
+		checkers = append(checkers, health.NewPingChecker("postgresql", pgDB))
+	} else if postgresConfigured(cfg.Database) {
 		checkers = append(checkers, health.NewStaticChecker("postgresql", health.StatusConfigured))
 	}
 
@@ -154,5 +181,8 @@ func componentCheckers(cfg *config.Config, redisClient *database.RedisClient) []
 }
 
 func postgresConfigured(cfg config.DatabaseConfig) bool {
+	if strings.TrimSpace(os.Getenv("DATABASE_URL")) != "" {
+		return true
+	}
 	return cfg.Host != "" && cfg.Port != "" && cfg.Name != ""
 }

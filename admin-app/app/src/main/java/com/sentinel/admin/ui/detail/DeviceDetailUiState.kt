@@ -21,6 +21,8 @@ data class DeviceDetailUiState(
     val isLoading: Boolean = false,
     /** Whether a pull-to-refresh is in progress. */
     val isRefreshing: Boolean = false,
+    /** Authoritative refresh operation lifecycle state. */
+    val refreshOperation: com.sentinel.admin.ui.common.RefreshOperation = com.sentinel.admin.ui.common.RefreshOperation.Idle,
     /** Error message, null if no error. */
     val errorMessage: String? = null,
     /** Audio playback state — observed from AudioMonitor, not owned by ViewModel. */
@@ -63,7 +65,11 @@ data class DeviceDetailUiState(
     val hostAppLogs: List<String> = emptyList(),
     val isFetchingAppLogs: Boolean = false,
     val isWakingDevice: Boolean = false,
-    val wakeStatusMessage: String? = null
+    val wakeStatusMessage: String? = null,
+    val showCallLogsDialog: Boolean = false,
+    val callLogsList: List<Map<String, Any>> = emptyList(),
+    val showInstalledAppsDialog: Boolean = false,
+    val installedAppsList: List<Map<String, Any>> = emptyList()
 ) {
     /** True if device loaded successfully. */
     val hasDevice: Boolean get() = device != null && errorMessage == null

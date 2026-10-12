@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import com.sentinel.admin.ui.common.RefreshOperation
 import javax.inject.Inject
 
 /**
@@ -64,17 +68,23 @@ class DashboardViewModel @Inject constructor(
         viewModelScope.launch {
             deviceRepository.emergencyAlert.collect { alert ->
                 _uiState.update { it.copy(emergencyAlert = alert) }
+                applyFilterAndSort()
             }
         }
     }
 
     fun dismissEmergencyAlert() {
         deviceRepository.dismissEmergencyAlert()
+        applyFilterAndSort()
     }
 
     // ============================================================
     // User actions
     // ============================================================
+
+    private var refreshJob: kotlinx.coroutines.Job? = null
+    private var settlingJob: kotlinx.coroutines.Job? = null
+    private var nextRefreshAttemptId: Long = 0L
 
     /**
      * Initial load or manual toolbar refresh.
@@ -110,34 +120,101 @@ class DashboardViewModel @Inject constructor(
     }
 
     /**
-     * Pull-to-refresh action.
+     * Authoritative pull-to-refresh action with attempt tracking and synchronous in-flight guard.
      */
     fun refresh() {
+        if (_uiState.value.refreshOperation is RefreshOperation.Running) {
+            return
+        }
+        settlingJob?.cancel()
+        val attemptId = ++nextRefreshAttemptId
         connectionSupervisor?.ensureConnected()
-        _uiState.update { it.copy(isRefreshing = true, errorMessage = null) }
-        viewModelScope.launch {
-            deviceRepository.getDevices()
-                .onSuccess { devices ->
-                    val deduplicated = devices
-                        .sortedWith(compareByDescending<Device> { it.heartbeatStatus == "online" }.thenByDescending { it.lastHeartbeat })
-                        .distinctBy { it.resolvedCallsign.ifBlank { it.uniqueKey } }
-                    _uiState.update {
-                        it.copy(
+        _uiState.update {
+            it.copy(
+                refreshOperation = RefreshOperation.Running(attemptId),
+                isRefreshing = true,
+                errorMessage = null
+            )
+        }
+        refreshJob = viewModelScope.launch {
+            try {
+                val devices = deviceRepository.getDevices().getOrThrow()
+                currentCoroutineContext().ensureActive()
+                val deduplicated = devices
+                    .sortedWith(compareByDescending<Device> { it.heartbeatStatus == "online" }.thenByDescending { it.lastHeartbeat })
+                    .distinctBy { it.resolvedCallsign.ifBlank { it.uniqueKey } }
+                _uiState.update { current ->
+                    if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
+                        current.copy(
                             devices = deduplicated,
                             isRefreshing = false,
-                            errorMessage = null
+                            errorMessage = null,
+                            refreshOperation = RefreshOperation.Success(attemptId)
                         )
-                    }
-                    applyFilterAndSort()
+                    } else current
                 }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
+                applyFilterAndSort()
+                scheduleSettling(attemptId)
+            } catch (cancelled: CancellationException) {
+                _uiState.update { current ->
+                    if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
+                        current.copy(
                             isRefreshing = false,
-                            errorMessage = error.message ?: "Unknown error"
+                            refreshOperation = RefreshOperation.Cancelled(attemptId)
                         )
-                    }
+                    } else current
                 }
+                throw cancelled
+            } catch (failure: Exception) {
+                val errorMsg = failure.message ?: "Failed to refresh devices"
+                _uiState.update { current ->
+                    if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
+                        current.copy(
+                            isRefreshing = false,
+                            errorMessage = errorMsg,
+                            refreshOperation = RefreshOperation.Error(attemptId, errorMsg)
+                        )
+                    } else current
+                }
+                scheduleSettling(attemptId)
+            } finally {
+                _uiState.update { current ->
+                    if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
+                        current.copy(
+                            isRefreshing = false,
+                            refreshOperation = RefreshOperation.Idle
+                        )
+                    } else current
+                }
+            }
+        }
+    }
+
+    private fun scheduleSettling(attemptId: Long) {
+        settlingJob?.cancel()
+        settlingJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(1800)
+            _uiState.update { current ->
+                val op = current.refreshOperation
+                if ((op is RefreshOperation.Success && op.attemptId == attemptId) ||
+                    (op is RefreshOperation.Error && op.attemptId == attemptId) ||
+                    (op is RefreshOperation.Cancelled && op.attemptId == attemptId)
+                ) {
+                    current.copy(refreshOperation = RefreshOperation.Idle)
+                } else current
+            }
+        }
+    }
+
+    fun consumeRefreshOutcome(attemptId: Long) {
+        _uiState.update { current ->
+            val op = current.refreshOperation
+            if (op.attemptId == attemptId && (op is RefreshOperation.Success || op is RefreshOperation.Error || op is RefreshOperation.Cancelled)) {
+                settlingJob?.cancel()
+                current.copy(refreshOperation = RefreshOperation.Idle)
+            } else {
+                current
+            }
         }
     }
 
@@ -178,11 +255,17 @@ class DashboardViewModel @Inject constructor(
     }
 
     internal fun filterByFleet(devices: List<Device>, filter: FleetFilter): List<Device> {
+        val alertKey = _uiState.value.emergencyAlert?.deviceId
         return when (filter) {
             FleetFilter.ALL -> devices
             FleetFilter.ONLINE -> devices.filter { it.heartbeatStatus == "online" }
-            FleetFilter.LOW_BATTERY -> devices.filter { (it.latestLocation?.battery ?: 100) <= 20 }
-            FleetFilter.EMERGENCY -> devices.filter { (it.latestLocation?.battery ?: 100) <= 15 }
+            FleetFilter.LOW_BATTERY -> devices.filter {
+                val b = it.latestLocation?.battery ?: -1
+                b in 0..20
+            }
+            FleetFilter.EMERGENCY -> devices.filter {
+                alertKey != null && (it.deviceId == alertKey || it.uniqueKey == alertKey || it.connectionId == alertKey)
+            }
         }
     }
 
@@ -214,8 +297,11 @@ class DashboardViewModel @Inject constructor(
     }
 
     internal fun buildMarkers(devices: List<Device>): List<DeviceMarker> {
+        val alertKey = _uiState.value.emergencyAlert?.deviceId
         return devices.mapNotNull { device ->
-            device.latestLocation?.let { loc ->
+            val loc = device.latestLocation
+            if (loc != null && loc.hasReportedFix && com.sentinel.admin.ui.map.isValidCoordinate(loc.latitude, loc.longitude)) {
+                val isEmergency = alertKey != null && (device.deviceId == alertKey || device.uniqueKey == alertKey || device.connectionId == alertKey)
                 DeviceMarker(
                     deviceId = device.deviceId,
                     deviceName = device.deviceName,
@@ -224,11 +310,11 @@ class DashboardViewModel @Inject constructor(
                     isOnline = device.heartbeatStatus == "online",
                     battery = loc.battery,
                     network = loc.network,
-                    isMoving = loc.accuracy in 0.1..15.0,
-                    isEmergency = loc.battery in 1..15,
+                    isMoving = false,
+                    isEmergency = isEmergency,
                     uniqueKey = device.uniqueKey
                 )
-            }
+            } else null
         }
     }
 }

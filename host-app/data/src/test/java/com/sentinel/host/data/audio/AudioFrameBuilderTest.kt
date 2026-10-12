@@ -185,6 +185,50 @@ class AudioFrameBuilderTest {
     }
 
     // ================================================================
+    // AUDIO_V2 tests (29-byte header with UUID)
+    // ================================================================
+
+    @Test
+    fun `AUDIO_V2 packet starts with 0x03 and has 29-byte header`() {
+        val streamId = java.util.UUID.randomUUID()
+        val opusData = ByteArray(50) { it.toByte() }
+        val frame = AudioFrame(
+            packetType = PacketType.AUDIO_V2,
+            sequence = 10,
+            timestamp = 5000L,
+            opusData = opusData,
+            streamId = streamId
+        )
+
+        val packet = builder.build(frame)!!
+
+        assertEquals(PacketType.AUDIO_V2, packet[0])
+        assertEquals(AudioConstants.HEADER_V2_SIZE + opusData.size, packet.size)
+    }
+
+    @Test
+    fun `AUDIO_V2 streamId is big-endian at offset 1`() {
+        val streamId = java.util.UUID(0x0102030405060708L, 0x090A0B0C0D0E0F10L)
+        val frame = AudioFrame(
+            packetType = PacketType.AUDIO_V2,
+            sequence = 42,
+            timestamp = 1000L,
+            opusData = byteArrayOf(0x55),
+            streamId = streamId
+        )
+
+        val packet = builder.build(frame)!!
+
+        val buf = ByteBuffer.wrap(packet).order(ByteOrder.BIG_ENDIAN)
+        assertEquals(PacketType.AUDIO_V2, buf.get())
+        assertEquals(0x0102030405060708L, buf.getLong())
+        assertEquals(0x090A0B0C0D0E0F10L, buf.getLong())
+        assertEquals(42, buf.getInt())
+        assertEquals(1000L, buf.getLong())
+        assertEquals(0x55.toByte(), buf.get())
+    }
+
+    // ================================================================
     // Helpers
     // ================================================================
 

@@ -18,6 +18,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -64,6 +65,10 @@ class DashboardViewModelTest {
         }
 
         override suspend fun getDevice(deviceId: String): Result<Device> {
+            return deviceResult
+        }
+
+        override suspend fun fetchFreshDevice(deviceId: String): Result<Device> {
             return deviceResult
         }
     }
@@ -215,6 +220,52 @@ class DashboardViewModelTest {
         viewModel.refresh()
         testDispatcher.scheduler.advanceUntilIdle()
         assertEquals(3, viewModel.uiState.value.devices.size)
+    }
+
+    @Test
+    fun `refresh transitions through Running to Success and scoped settling`() = runTest(testDispatcher) {
+        fakeRepo.devicesResult = Result.success(TEST_DEVICES)
+        viewModel = createViewModel()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.refresh()
+        val op = viewModel.uiState.value.refreshOperation
+        assertTrue("refreshOperation should be Running", op is com.sentinel.admin.ui.common.RefreshOperation.Running)
+        val attemptId = op.attemptId
+        assertNotNull(attemptId)
+
+        // Concurrent duplicate refresh call while Running is rejected by synchronous guard
+        viewModel.refresh()
+        assertEquals("Duplicate call must not mutate attempt ID", attemptId, viewModel.uiState.value.refreshOperation.attemptId)
+
+        // Advance dispatcher until repository call completes
+        testDispatcher.scheduler.runCurrent()
+        val successOp = viewModel.uiState.value.refreshOperation
+        assertTrue("refreshOperation should be Success", successOp is com.sentinel.admin.ui.common.RefreshOperation.Success)
+        assertEquals(attemptId, successOp.attemptId)
+
+        // After settling time (1800ms), state transitions to Idle
+        testDispatcher.scheduler.advanceTimeBy(1900)
+        assertTrue("refreshOperation should be Idle after settling", viewModel.uiState.value.refreshOperation is com.sentinel.admin.ui.common.RefreshOperation.Idle)
+    }
+
+    @Test
+    fun `consumeRefreshOutcome immediately resets outcome if attempt ID matches`() = runTest(testDispatcher) {
+        fakeRepo.devicesResult = Result.success(TEST_DEVICES)
+        viewModel = createViewModel()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        viewModel.refresh()
+        testDispatcher.scheduler.runCurrent()
+        val attemptId = viewModel.uiState.value.refreshOperation.attemptId!!
+
+        // Consuming mismatched attempt ID is ignored
+        viewModel.consumeRefreshOutcome(attemptId + 999)
+        assertTrue(viewModel.uiState.value.refreshOperation is com.sentinel.admin.ui.common.RefreshOperation.Success)
+
+        // Consuming matching attempt ID resets to Idle immediately
+        viewModel.consumeRefreshOutcome(attemptId)
+        assertTrue(viewModel.uiState.value.refreshOperation is com.sentinel.admin.ui.common.RefreshOperation.Idle)
     }
 
     // ============================================================
@@ -562,26 +613,24 @@ class DashboardViewModelTest {
     }
 
     @Test
-    fun `buildMarkers populates isMoving and isEmergency status`() = runTest(testDispatcher) {
+    fun `buildMarkers does not fabricate movement from accuracy or emergency from low battery`() = runTest(testDispatcher) {
         viewModel = createViewModel()
-        val movingDevice = TEST_DEVICES[0].copy(
+        val deviceWithAccuracy = TEST_DEVICES[0].copy(
             latestLocation = TEST_DEVICES[0].latestLocation?.copy(accuracy = 5.0, battery = 80)
         )
-        val emergencyDevice = TEST_DEVICES[0].copy(
-            deviceId = "HOST-EMERGENCY",
+        val lowBattDevice = TEST_DEVICES[0].copy(
+            deviceId = "HOST-LOWBATT",
             latestLocation = TEST_DEVICES[0].latestLocation?.copy(accuracy = 25.0, battery = 10)
         )
-        val markers = viewModel.buildMarkers(listOf(movingDevice, emergencyDevice))
-        val movingMarker = markers.find { it.deviceId == "HOST-0001" }!!
-        val emergencyMarker = markers.find { it.deviceId == "HOST-EMERGENCY" }!!
+        val markers = viewModel.buildMarkers(listOf(deviceWithAccuracy, lowBattDevice))
+        val marker1 = markers.find { it.deviceId == "HOST-0001" }!!
+        val marker2 = markers.find { it.deviceId == "HOST-LOWBATT" }!!
 
-        // movingDevice has accuracy 5.0 (in 0.1..15.0), battery 80
-        assertTrue(movingMarker.isMoving)
-        assertFalse(movingMarker.isEmergency)
-
-        // emergencyDevice has accuracy 25.0 (> 15.0), battery 10 (in 1..15)
-        assertFalse(emergencyMarker.isMoving)
-        assertTrue(emergencyMarker.isEmergency)
+        // Neither accuracy nor low battery should fabricate movement or emergency states
+        assertFalse(marker1.isMoving)
+        assertFalse(marker1.isEmergency)
+        assertFalse(marker2.isMoving)
+        assertFalse(marker2.isEmergency)
     }
 
     // ============================================================

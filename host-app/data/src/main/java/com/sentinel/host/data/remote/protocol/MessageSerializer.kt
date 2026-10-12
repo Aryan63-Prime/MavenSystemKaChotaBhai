@@ -177,7 +177,9 @@ class MessageSerializer(private val moshi: Moshi = Moshi.Builder().build()) {
                 IncomingMessage.Listen(
                     type = envelope.type,
                     sequence = envelope.sequence,
-                    deviceId = msg?.data?.deviceId ?: ""
+                    deviceId = msg?.data?.deviceId ?: "",
+                    streamId = msg?.data?.streamId,
+                    maxDurationSeconds = msg?.data?.maxDurationSeconds
                 )
             }
 
@@ -186,7 +188,8 @@ class MessageSerializer(private val moshi: Moshi = Moshi.Builder().build()) {
                 IncomingMessage.Stop(
                     type = envelope.type,
                     sequence = envelope.sequence,
-                    deviceId = msg?.data?.deviceId ?: ""
+                    deviceId = msg?.data?.deviceId ?: "",
+                    streamId = msg?.data?.streamId
                 )
             }
 

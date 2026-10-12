@@ -37,6 +37,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import com.sentinel.host.data.session.SessionManagerImpl
+import com.sentinel.host.domain.session.CaptureOperation
+import java.util.UUID
 import javax.inject.Inject
 
 /**
@@ -53,13 +56,18 @@ class SentinelForegroundService : Service() {
         private const val NOTIFICATION_ID = 1001
 
         const val SERVER_URL = "wss://project-sentinel-rwt4.onrender.com/ws"
-        const val JWT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkZXZpY2VfaWQiOiJIT1NULTAwMSIsImlzcyI6InByb2plY3Qtc2VudGluZWwiLCJzdWIiOiJIT1NULTAwMSIsImV4cCI6MTgxNTg5MDcwMywiaWF0IjoxNzg0MzU0NzAzfQ.l_yJzhLSY0Kuhudn6-5W81pyv77NBZkDsZVdXgWKeSA"
 
         const val EXTRA_FROM_BOOT = "extra_from_boot"
         const val ACTION_START = "com.sentinel.host.action.START"
         const val ACTION_WAKE = "com.sentinel.host.action.WAKE"
+        var sessionManagerProvider: ((Context) -> com.sentinel.host.domain.session.SessionManager)? = null
 
         fun Start(context: Context, isFromBoot: Boolean = false) {
+            val sessionManager = sessionManagerProvider?.invoke(context) ?: com.sentinel.host.data.session.SessionManagerImpl(context)
+            if (!sessionManager.isEnrollmentApproved()) {
+                Log.w(TAG, "SentinelForegroundService.Start blocked: On-device host enrollment approval not granted")
+                return
+            }
             val intent = Intent(context, SentinelForegroundService::class.java).apply {
                 putExtra(EXTRA_FROM_BOOT, isFromBoot)
             }
@@ -100,6 +108,10 @@ class SentinelForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "SentinelForegroundService created")
+        if (!sessionManager.isEnrollmentApproved()) {
+            Log.w(TAG, "SentinelForegroundService.onCreate blocked: On-device host enrollment approval not granted")
+            return
+        }
         createNotificationChannel()
         registerReceiver(locationReceiver, IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION))
         SentinelWatchdogWorker.schedule(this)
@@ -157,19 +169,56 @@ class SentinelForegroundService : Service() {
         // Wire on-demand session-scoped audio controls
         audioStreamer.onSessionTimeout = {
             Log.i(TAG, "Audio session timeout — auto dropping mic elevation")
-            stopOnDemandAudio()
+            sessionManager.invalidateOnStop(audioStreamer.activeStreamId)
+            stopOnDemandAudio(null)
         }
-        connectionSupervisor.onStartAudioRequested = { _, _ ->
-            startOnDemandAudio()
+        connectionSupervisor.onStartAudioRequested = { _, _, streamIdStr, maxDurationSec ->
+            val streamId = try {
+                streamIdStr?.let { UUID.fromString(it) }
+            } catch (e: Throwable) {
+                null
+            }
+            if (streamId != null && streamId != SessionManagerImpl.NIL_UUID && sessionManager.isEnrollmentApproved()) {
+                val durationSec = (maxDurationSec ?: 300L).coerceIn(1L, 300L)
+                val permit = sessionManager.authorizeCapture(
+                    streamId = streamId,
+                    operation = CaptureOperation.AUDIO_STREAM,
+                    durationSeconds = durationSec
+                )
+                if (permit != null) {
+                    startOnDemandAudio(maxDurationSeconds = permit.durationSeconds, streamId = streamId)
+                } else {
+                    Log.w(TAG, "authorizeCapture rejected for stream $streamId (active session or duplicate request)")
+                }
+            } else {
+                Log.w(TAG, "Rejecting onStartAudioRequested: invalid/nil stream UUID ($streamIdStr) or not approved")
+            }
         }
-        connectionSupervisor.onStopAudioRequested = { _, _ ->
-            stopOnDemandAudio()
+        connectionSupervisor.onStopAudioRequested = { _, _, streamIdStr ->
+            val streamId = try {
+                streamIdStr?.let { UUID.fromString(it) }
+            } catch (e: Throwable) {
+                null
+            }
+            sessionManager.invalidateOnStop(streamId)
+            stopOnDemandAudio(streamId = streamId)
         }
         commandProcessor.onStartAudioRequested = {
-            startOnDemandAudio()
+            if (sessionManager.isEnrollmentApproved()) {
+                val streamId = UUID.randomUUID()
+                val permit = sessionManager.authorizeCapture(
+                    streamId = streamId,
+                    operation = CaptureOperation.AUDIO_STREAM,
+                    durationSeconds = 300L
+                )
+                if (permit != null) {
+                    startOnDemandAudio(maxDurationSeconds = permit.durationSeconds, streamId = streamId)
+                }
+            }
         }
         commandProcessor.onStopAudioRequested = {
-            stopOnDemandAudio()
+            sessionManager.invalidateOnStop(null)
+            stopOnDemandAudio(null)
         }
 
         serviceScope.launch {
@@ -182,6 +231,22 @@ class SentinelForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!sessionManager.isEnrollmentApproved()) {
+            Log.w(TAG, "SentinelForegroundService blocked in onStartCommand: On-device host enrollment approval not granted")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                createNotificationChannel()
+                val notification = buildNotification("Service stopped — approval required")
+                try {
+                    startForeground(NOTIFICATION_ID, notification)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "startForeground error during unapproved shutdown: ${e.message}")
+                }
+            }
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+
         if (intent?.action == "com.sentinel.host.SIMULATE_FALL") {
             val impact = intent.getFloatExtra("impactG", 4.8f)
             Log.w(TAG, "Triggering SIMULATE_FALL with impact $impact g")
@@ -203,11 +268,6 @@ class SentinelForegroundService : Service() {
             )
             wakeLock?.acquire(15_000L)
             connectionSupervisor.forceReconnect()
-
-            if (intent?.getBooleanExtra("EXTRA_START_AUDIO_STREAM", false) == true) {
-                Log.i(TAG, "FCM direct audio wake detected — engaging on-demand microphone capture")
-                startOnDemandAudio()
-            }
         }
 
         val notification = buildNotification("Scanning ...")
@@ -275,17 +335,20 @@ class SentinelForegroundService : Service() {
                     }
                     is ConnectionState.Reconnecting -> {
                         periodicTelemetryJob?.cancel()
-                        if (isMicrophoneElevated) stopOnDemandAudio()
+                        sessionManager.invalidateOnDisconnect()
+                        if (isMicrophoneElevated || audioStreamer.isStreaming) stopOnDemandAudio(null)
                         "Syncing..."
                     }
                     is ConnectionState.Error -> {
                         periodicTelemetryJob?.cancel()
-                        if (isMicrophoneElevated) stopOnDemandAudio()
+                        sessionManager.invalidateOnDisconnect()
+                        if (isMicrophoneElevated || audioStreamer.isStreaming) stopOnDemandAudio(null)
                         "Syncing..."
                     }
                     is ConnectionState.Disconnected -> {
                         periodicTelemetryJob?.cancel()
-                        if (isMicrophoneElevated) stopOnDemandAudio()
+                        sessionManager.invalidateOnDisconnect()
+                        if (isMicrophoneElevated || audioStreamer.isStreaming) stopOnDemandAudio(null)
                         "Syncing..."
                     }
                     else -> "Syncing..."
@@ -345,7 +408,14 @@ class SentinelForegroundService : Service() {
                     val isConnected = connectionSupervisor.state.value is ConnectionState.Ready
                     if (!isConnected) {
                         Log.i(TAG, "Auto-repair: Attempting silent connection to $SERVER_URL (attempt ${attempt + 1})")
-                        val result = connectUseCase.execute(SERVER_URL, JWT_TOKEN)
+                        val savedToken = sessionManager.getToken()
+                        val savedServerUrl = sessionManager.getServerUrl()
+                        if (savedToken.isNullOrBlank() || savedServerUrl.isNullOrBlank()) {
+                            Log.w(TAG, "Connection requires a configured server and device credential")
+                            delay(30_000L)
+                            continue
+                        }
+                        val result = connectUseCase.execute(savedServerUrl, savedToken)
                         if (result.isSuccess) {
                             Log.i(TAG, "Auto-repair successful: Connected and registered!")
                             attempt = 0
@@ -388,7 +458,20 @@ class SentinelForegroundService : Service() {
      * Dynamically elevates the foreground service to include MICROPHONE type
      * only during an active on-demand listening session.
      */
-    fun startOnDemandAudio() = synchronized(audioTransitionLock) {
+    fun startOnDemandAudio(
+        maxDurationSeconds: Long = 300L,
+        streamId: UUID? = null
+    ) = synchronized(audioTransitionLock) {
+        if (streamId == null || streamId == SessionManagerImpl.NIL_UUID) {
+            Log.w(TAG, "Cannot start on-demand audio: Missing or nil stream UUID: $streamId")
+            return@synchronized
+        }
+
+        if (!sessionManager.isCapturePermitted(streamId, CaptureOperation.AUDIO_STREAM)) {
+            Log.w(TAG, "Cannot start on-demand audio: Request-specific capture approval not granted or expired (streamId=$streamId)")
+            return@synchronized
+        }
+
         if (isMicrophoneElevated && audioStreamer.isStreaming) {
             Log.d(TAG, "Audio already streaming on-demand")
             return@synchronized
@@ -400,30 +483,34 @@ class SentinelForegroundService : Service() {
 
         if (!hasMic) {
             Log.w(TAG, "Cannot start on-demand audio: RECORD_AUDIO permission not granted")
+            sessionManager.revokePermit(streamId)
             return@synchronized
         }
+
+        val sessionSuffix = " (Session: ${streamId.toString().take(8)})"
+        val activeText = "Active Audio Stream — Microphone In Use$sessionSuffix"
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val activeType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             try {
-                val notification = buildNotification("System Nominal")
+                val notification = buildNotification(activeText)
                 startForeground(NOTIFICATION_ID, notification, activeType)
                 isMicrophoneElevated = true
                 Log.i(TAG, "Dynamic FGS elevation to LOCATION|MICROPHONE succeeded — green privacy dot active")
             } catch (e: Throwable) {
-                Log.w(TAG, "Dynamic FGS elevation to MICROPHONE failed: ${e.message}")
+                Log.e(TAG, "Dynamic FGS elevation to MICROPHONE failed: ${e.message}", e)
+                sessionManager.revokePermit(streamId)
+                isMicrophoneElevated = false
+                return@synchronized
             }
         } else {
             isMicrophoneElevated = true
         }
 
-        // Elevate process state to TOP via 1ms transparent trampoline for unmuted HAL capture
-        SentinelAccessibilityService.launchTrampoline(applicationContext)
-
         audioStreamer.hasPermission = true
-        audioStreamer.start(maxDurationSeconds = 300L)
-        updateNotification("System Nominal")
+        audioStreamer.start(maxDurationSeconds = maxDurationSeconds, streamId = streamId)
+        updateNotification(activeText)
     }
 
     /**
@@ -431,9 +518,17 @@ class SentinelForegroundService : Service() {
      * and drops foreground service type back to LOCATION so the Android green
      * microphone privacy dot turns OFF immediately.
      */
-    fun stopOnDemandAudio() = synchronized(audioTransitionLock) {
+    fun stopOnDemandAudio(streamId: UUID? = null) = synchronized(audioTransitionLock) {
+        val currentStream = audioStreamer.activeStreamId
+        if (streamId != null && currentStream != null && streamId != currentStream) {
+            Log.w(TAG, "Ignoring stopOnDemandAudio for mismatched streamId $streamId (active is $currentStream)")
+            return@synchronized
+        }
+        val targetStream = streamId ?: currentStream
+        sessionManager.invalidateOnStop(targetStream)
+
         Log.i(TAG, "Stopping on-demand audio capture and releasing microphone resources")
-        audioStreamer.stop()
+        audioStreamer.stop(streamId)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val idleType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
@@ -470,7 +565,8 @@ class SentinelForegroundService : Service() {
 
     override fun onDestroy() {
         Log.i(TAG, "SentinelForegroundService destroyed")
-        stopOnDemandAudio()
+        sessionManager.invalidateOnDisconnect()
+        stopOnDemandAudio(null)
         try {
             unregisterReceiver(locationReceiver)
         } catch (e: Exception) {
@@ -504,9 +600,17 @@ class SentinelForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Keep microphone disclosure visible when connection/status updates arrive.
+        val notificationText = if (audioStreamer.isStreaming) {
+            val sessionSuffix = audioStreamer.activeStreamId?.let { " (Session: ${it.toString().take(8)})" } ?: ""
+            "Microphone active — live audio streaming$sessionSuffix"
+        } else {
+            text
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("System Service")
-            .setContentText(text)
+            .setContentTitle("Sentinel Host")
+            .setContentText(notificationText)
             .setSmallIcon(R.drawable.ic_silent)
             .setOngoing(true)
             .setSilent(true)

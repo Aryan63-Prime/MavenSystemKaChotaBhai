@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/xaiop/project-sentinel/server/internal/app"
 )
@@ -23,7 +24,12 @@ func New(application *app.Application) *Server {
 				application.Config.Server.Host,
 				application.Config.Server.Port,
 			),
-			Handler: application.Gateway.Handler(),
+			Handler:           application.Gateway.Handler(),
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			WriteTimeout:      30 * time.Second,
+			IdleTimeout:       60 * time.Second,
+			MaxHeaderBytes:    1 << 20,
 		},
 	}
 }

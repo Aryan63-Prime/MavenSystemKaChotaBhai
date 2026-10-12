@@ -142,6 +142,12 @@ fun SystemDiagnosticsDialog(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
 
+                val gatewayIp = data["gatewayIp"]?.toString() ?: ""
+                val wifiBssid = data["wifiBssid"]?.toString() ?: ""
+                val dnsServers = data["dnsServers"]?.toString() ?: ""
+                val netInterface = data["networkInterface"]?.toString() ?: ""
+                val powerWatts = data["batteryPowerWatts"]?.toString() ?: ""
+
                 if (carrier.isNotBlank()) {
                     DiagnosticItem(label = "Cellular Network / SIM", value = carrier)
                 }
@@ -149,8 +155,20 @@ fun SystemDiagnosticsDialog(
                     label = "Wi-Fi Uplink",
                     value = if (wifiBand.isNotBlank() && wifiSpeed.isNotBlank() && wifiSpeed != "N/A") "$wifiSsid · $wifiBand ($wifiSpeed)" else wifiSsid
                 )
+                if (wifiBssid.isNotBlank() && wifiBssid != "N/A") {
+                    DiagnosticItem(label = "Wi-Fi BSSID", value = wifiBssid, isMonospace = true)
+                }
                 if (localIp.isNotBlank() && localIp != "N/A") {
                     DiagnosticItem(label = "Local IPv4", value = localIp, isMonospace = true)
+                }
+                if (gatewayIp.isNotBlank() && gatewayIp != "N/A") {
+                    DiagnosticItem(label = "Default Gateway", value = gatewayIp, isMonospace = true)
+                }
+                if (dnsServers.isNotBlank() && dnsServers != "N/A") {
+                    DiagnosticItem(label = "DNS Servers", value = dnsServers, isMonospace = true)
+                }
+                if (netInterface.isNotBlank()) {
+                    DiagnosticItem(label = "Network Interface", value = netInterface, isMonospace = true)
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -158,15 +176,52 @@ fun SystemDiagnosticsDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    text = "KERNEL & SYSTEM POSTURE",
+                    text = "KERNEL, ROOT & SECURITY POSTURE",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
 
-                if (kernelVer.isNotBlank()) {
-                    DiagnosticItem(label = "Linux Kernel", value = kernelVer, isMonospace = true)
+                val unameSys = data["unameSysname"]?.toString() ?: ""
+                val unameRel = data["unameRelease"]?.toString() ?: kernelVer
+                val unameArch = data["unameMachine"]?.toString() ?: ""
+                val isSelinuxEnforced = data["isSelinuxEnforced"] != false
+                val isRooted = data["isRooted"] == true
+                val isAdb = data["isAdbEnabled"] == true
+                val isDevOpt = data["isDeveloperOptionsEnabled"] == true
+                val isUsbConn = data["isUsbConnected"] == true
+                val isUsbAdb = data["isUsbAdbActive"] == true
+                val isWirelessAdb = data["isWirelessAdbEnabled"] == true
+                val isMock = data["isMockLocationEnabled"] == true
+                val bootloader = data["bootloader"]?.toString() ?: ""
+
+                if (unameRel.isNotBlank()) {
+                    DiagnosticItem(label = "Kernel Release", value = if (unameArch.isNotBlank()) "$unameRel ($unameArch)" else unameRel, isMonospace = true)
+                }
+                DiagnosticItem(label = "SELinux Status", value = if (isSelinuxEnforced) "Enforcing" else "Permissive")
+                DiagnosticItem(
+                    label = "Root Status",
+                    value = if (isRooted) "COMPROMISED (Root detected)" else "Clean (No root/tamper)"
+                )
+                DiagnosticItem(label = "ADB Status", value = if (isAdb) "Enabled" else "Disabled")
+                DiagnosticItem(
+                    label = "USB State",
+                    value = when {
+                        isUsbConn && isUsbAdb -> "Connected (ADB Link Active)"
+                        isUsbConn -> "Connected (Charging/MTP)"
+                        else -> "Disconnected"
+                    }
+                )
+                if (isWirelessAdb) {
+                    DiagnosticItem(label = "Wireless Debugging", value = "Active (Port open)")
+                }
+                DiagnosticItem(label = "Developer Options", value = if (isDevOpt) "Enabled" else "Disabled")
+                if (isMock) {
+                    DiagnosticItem(label = "Mock Locations", value = "Allowed (Warning: Location spoofing possible)")
+                }
+                if (bootloader.isNotBlank()) {
+                    DiagnosticItem(label = "Bootloader", value = bootloader)
                 }
                 if (uptime.isNotBlank()) {
                     DiagnosticItem(label = "System Uptime", value = uptime)
@@ -174,9 +229,9 @@ fun SystemDiagnosticsDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
                 Text(
-                    text = "System Status: Nominal",
+                    text = if (isRooted) "System Posture: COMPROMISED" else "System Status: Nominal",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
+                    color = if (isRooted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
             }
         },

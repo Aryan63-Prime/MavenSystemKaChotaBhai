@@ -17,11 +17,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ListAlt
+import androidx.compose.material.icons.filled.Android
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.ListAlt
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
@@ -55,6 +57,8 @@ fun AirCommandCard(
     onCaptureScreenshotClick: () -> Unit = {},
     onLockDeviceClick: () -> Unit = {},
     onArmGeofenceClick: () -> Unit = {},
+    onFetchCallLogsClick: () -> Unit = {},
+    onFetchInstalledAppsClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Card(
@@ -150,6 +154,28 @@ fun AirCommandCard(
                     modifier = Modifier.weight(1f)
                 )
             }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                TacticalCommandButton(
+                    icon = Icons.Default.Call,
+                    label = "Call Logs",
+                    onClick = onFetchCallLogsClick,
+                    enabled = isOnline,
+                    accentColor = Color(0xFF38BDF8),
+                    modifier = Modifier.weight(1f)
+                )
+                TacticalCommandButton(
+                    icon = Icons.Default.Android,
+                    label = "App List",
+                    onClick = onFetchInstalledAppsClick,
+                    enabled = isOnline,
+                    accentColor = Color(0xFFA78BFA),
+                    modifier = Modifier.weight(1f)
+                )
+            }
 
             Spacer(modifier = Modifier.height(14.dp))
 
@@ -208,7 +234,7 @@ fun AirCommandCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 TacticalCommandButton(
-                    icon = Icons.Default.ListAlt,
+                    icon = Icons.AutoMirrored.Filled.ListAlt,
                     label = "Key & Notifs",
                     onClick = onFetchNotifLogsClick,
                     enabled = isOnline,

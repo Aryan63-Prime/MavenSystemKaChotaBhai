@@ -38,3 +38,15 @@ func TestSession_IsAdmin_RegisteredHostSession(t *testing.T) {
 		t.Error("expected IsAdmin=false for registered host session")
 	}
 }
+
+func TestHostIsNotAdminBeforeRegistration(t *testing.T) {
+	s := NewSession("host", time.Now(), nil)
+	s.SetAuthenticated("HOST-001")
+	if s.IsAdmin() {
+		t.Fatal("host must never gain admin rights before registration")
+	}
+	s.SetRegistered(protocol.RegisterMessage{DeviceID: "HOST-001-VIVO-AAAA"})
+	if s.AuthenticatedDeviceID() != "HOST-001" || s.DeviceID() != "HOST-001-VIVO-AAAA" {
+		t.Fatal("principal and registered device must be separate")
+	}
+}

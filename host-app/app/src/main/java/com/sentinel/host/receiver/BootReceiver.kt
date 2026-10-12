@@ -16,11 +16,18 @@ class BootReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "Sentinel:Boot"
+        var sessionManagerProvider: ((Context) -> com.sentinel.host.domain.session.SessionManager)? = null
     }
 
     override fun onReceive(context: Context, intent: Intent?) {
         val action = intent?.action ?: return
         Log.i(TAG, "BootReceiver fired: $action")
+
+        val sessionManager = sessionManagerProvider?.invoke(context) ?: com.sentinel.host.data.session.SessionManagerImpl(context)
+        if (!sessionManager.isEnrollmentApproved()) {
+            Log.w(TAG, "BootReceiver: On-device host approval not granted, blocking service start")
+            return
+        }
 
         // Schedule WorkManager watchdog as safety net
         SentinelWatchdogWorker.schedule(context)

@@ -81,6 +81,10 @@ class AudioMonitor(
     var activeDeviceId: String? = null
         private set
 
+    @Volatile
+    var activeStreamId: java.util.UUID? = null
+        private set
+
     // Mutable stats counters (updated atomically via _statistics.value = ...)
     private var framesReceived = 0L
     private var framesDecoded = 0L
@@ -133,20 +137,21 @@ class AudioMonitor(
 
     /**
      * Starts the audio pipeline for the given device.
-     * Idempotent — if already started for the same device, no-op.
-     * If started for a different device, stops first then starts.
+     * Idempotent — if already started for the same device and streamId, no-op.
+     * If started for a different device or stream, stops first then starts.
      */
-    fun start(deviceId: String) {
-        if (activeDeviceId == deviceId && playbackJob?.isActive == true) {
+    fun start(deviceId: String, streamId: java.util.UUID? = null) {
+        if (activeDeviceId == deviceId && (streamId == null || activeStreamId == streamId) && playbackJob?.isActive == true) {
             Log.d(TAG, "Already listening to $deviceId")
             return
         }
 
-        if (activeDeviceId != null && activeDeviceId != deviceId) {
+        if (activeDeviceId != null) {
             stopInternal()
         }
 
         activeDeviceId = deviceId
+        activeStreamId = streamId
         resetCounters()
         jitterBuffer.reset()
 
@@ -222,6 +227,19 @@ class AudioMonitor(
             framesDropped++
             updateStatistics()
             return
+        }
+
+        // Validate stream UUID for AUDIO_V2 frames
+        val expectedStream = activeStreamId
+        if (frame.streamId != null) {
+            if (expectedStream != null && frame.streamId != expectedStream) {
+                // Reject stale frame from mismatched stream session
+                framesDropped++
+                updateStatistics()
+                return
+            } else if (expectedStream == null) {
+                activeStreamId = frame.streamId
+            }
         }
 
         framesReceived++
@@ -341,6 +359,7 @@ class AudioMonitor(
 
     private fun stopInternal() {
         activeDeviceId = null
+        activeStreamId = null
         playbackJob?.cancel()
         playbackJob = null
         audioOutput.release()

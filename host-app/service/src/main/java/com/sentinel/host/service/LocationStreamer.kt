@@ -24,7 +24,8 @@ class LocationStreamer(
     private val scope: CoroutineScope,
     private val motionDetector: MotionDetector? = null,
     private val ramBuffer: RamTelemetryBuffer = RamTelemetryBuffer(),
-    private val config: LocationConfig = LocationConfig()
+    private val config: LocationConfig = LocationConfig(),
+    private val deadReckoningEngine: com.sentinel.host.data.location.DeadReckoningEngine? = null
 ) {
 
     companion object {
@@ -33,6 +34,7 @@ class LocationStreamer(
 
     private var collectJob: Job? = null
     private var motionJob: Job? = null
+    private var deadReckoningJob: Job? = null
 
     /** Whether location permission has been granted. Set by the UI/permission layer. */
     @Volatile
@@ -59,16 +61,25 @@ class LocationStreamer(
         stop() // Prevent duplicates
 
         motionDetector?.start()
+        deadReckoningEngine?.start()
         observeMotionAndStartUpdates()
 
         collectJob = locationProvider.locations
             .onEach { update -> handleLocationUpdate(update) }
             .launchIn(scope)
 
+        deadReckoningJob = deadReckoningEngine?.estimatedLocation
+            ?.onEach { estimated ->
+                if (estimated != null && deadReckoningEngine.isGpsLost) {
+                    handleLocationUpdate(estimated)
+                }
+            }
+            ?.launchIn(scope)
+
         // Flush any transient fixes saved in RAM ring buffer upon start/reconnect
         flushRamBuffer()
 
-        Log.i(TAG, "Adaptive location streaming started")
+        Log.i(TAG, "Adaptive location streaming started with EKF dead reckoning")
     }
 
     /**
@@ -79,6 +90,9 @@ class LocationStreamer(
         collectJob = null
         motionJob?.cancel()
         motionJob = null
+        deadReckoningJob?.cancel()
+        deadReckoningJob = null
+        deadReckoningEngine?.stop()
         motionDetector?.stop()
         locationProvider.stopUpdates()
         Log.i(TAG, "Location streaming stopped")
@@ -92,6 +106,9 @@ class LocationStreamer(
         collectJob = null
         motionJob?.cancel()
         motionJob = null
+        deadReckoningJob?.cancel()
+        deadReckoningJob = null
+        deadReckoningEngine?.stop()
         motionDetector?.stop()
         locationProvider.stopUpdates()
         Log.i(TAG, "Location streaming paused (reconnecting)")
@@ -156,6 +173,9 @@ class LocationStreamer(
     }
 
     private suspend fun handleLocationUpdate(update: LocationUpdate) {
+        if (!update.network.contains("DeadReckoning")) {
+            deadReckoningEngine?.onGpsLocationReceived(update)
+        }
         try {
             locationRepository.sendLocation(update)
             Log.d(TAG, "Location sent: ${update.latitude}, ${update.longitude}")

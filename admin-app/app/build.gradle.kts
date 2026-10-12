@@ -91,6 +91,9 @@ dependencies {
     implementation("com.google.maps.android:maps-compose:6.2.1")
     implementation("com.google.android.gms:play-services-maps:19.0.0")
 
+    // MapLibre Native (OpenFreeMap vector tile renderer, 16 KB page size aligned)
+    implementation("org.maplibre.gl:android-sdk:11.8.2")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

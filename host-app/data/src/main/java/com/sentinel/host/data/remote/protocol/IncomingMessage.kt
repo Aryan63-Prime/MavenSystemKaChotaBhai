@@ -67,13 +67,16 @@ sealed interface IncomingMessage {
     data class Listen(
         override val type: String,
         override val sequence: Long,
-        val deviceId: String = ""
+        val deviceId: String = "",
+        val streamId: String? = null,
+        val maxDurationSeconds: Long? = null
     ) : IncomingMessage
 
     data class Stop(
         override val type: String,
         override val sequence: Long,
-        val deviceId: String = ""
+        val deviceId: String = "",
+        val streamId: String? = null
     ) : IncomingMessage
 
     data class Unknown(

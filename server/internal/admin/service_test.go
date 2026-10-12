@@ -176,3 +176,99 @@ func (p fakeHeartbeatPolicy) IsStale(lastHeartbeat time.Time) bool {
 
 	return p.stale
 }
+
+func TestFleetLocationDoesNotFallBackToSharedToken(t *testing.T) {
+	locations := &fakeLocationReader{locations: map[string]repository.Location{
+		"HOST-001":           {DeviceID: "HOST-001", Battery: 99},
+		"HOST-VIVO-AAAA":     {DeviceID: "HOST-VIVO-AAAA", Battery: 88},
+		"HOST-001-VIVO-BBBB": {DeviceID: "HOST-001-VIVO-BBBB", Battery: 42},
+	}}
+	service := NewService(nil, locations, nil)
+	first, err := service.deviceFromSnapshot(context.Background(), SessionSnapshot{DeviceID: "HOST-001-VIVO-AAAA"})
+	if err != nil || first.LatestLocation != nil {
+		t.Fatalf("must not borrow shared/alias location: %+v, %v", first, err)
+	}
+	second, err := service.deviceFromSnapshot(context.Background(), SessionSnapshot{DeviceID: "HOST-001-VIVO-BBBB"})
+	if err != nil || second.LatestLocation == nil || second.LatestLocation.Battery != 42 {
+		t.Fatalf("exact location missing: %+v, %v", second, err)
+	}
+}
+
+type fakeEnrolledSource struct {
+	devices []repository.EnrolledDevice
+}
+
+func (f *fakeEnrolledSource) ListEnrolledDevices(ctx context.Context) ([]repository.EnrolledDevice, error) {
+	return f.devices, nil
+}
+
+func (f *fakeEnrolledSource) GetEnrolledDevice(ctx context.Context, deviceID string) (*repository.EnrolledDevice, error) {
+	for _, d := range f.devices {
+		if d.DeviceID == deviceID {
+			return &d, nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
+func (f *fakeEnrolledSource) GetBatteryHistory(ctx context.Context, deviceID string, limit int) ([]repository.BatteryHistoryEntry, error) {
+	return []repository.BatteryHistoryEntry{
+		{
+			DeviceID:       deviceID,
+			BatteryPercent: 88,
+			BatteryTempC:   29.5,
+			IsCharging:     false,
+			RecordedAt:     time.Now(),
+		},
+	}, nil
+}
+
+func TestServiceIncludesOfflineEnrolledDevices(t *testing.T) {
+	service := NewService(nil, nil, nil)
+	enrolled := &fakeEnrolledSource{
+		devices: []repository.EnrolledDevice{
+			{
+				DeviceID:   "HOST-ENROLLED-1",
+				DeviceName: "Enrolled Phone",
+				AppVersion: "1.0.0",
+				Model:      "Galaxy S24",
+				LastSeen:   time.Now(),
+			},
+		},
+	}
+	service.SetEnrolledDeviceSource(enrolled)
+
+	devices, err := service.ListDevices(context.Background())
+	if err != nil {
+		t.Fatalf("ListDevices failed: %v", err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+	if devices[0].DeviceID != "HOST-ENROLLED-1" || devices[0].HeartbeatStatus != "stale" {
+		t.Fatalf("unexpected offline device state: %+v", devices[0])
+	}
+
+	dev, ok, err := service.GetDevice(context.Background(), "HOST-ENROLLED-1")
+	if err != nil || !ok {
+		t.Fatalf("GetDevice failed: ok=%v, err=%v", ok, err)
+	}
+	if dev.DeviceID != "HOST-ENROLLED-1" {
+		t.Fatalf("unexpected device: %+v", dev)
+	}
+}
+
+func TestServiceGetBatteryHistory(t *testing.T) {
+	service := NewService(nil, nil, nil)
+	enrolled := &fakeEnrolledSource{}
+	service.SetEnrolledDeviceSource(enrolled)
+
+	history, err := service.GetBatteryHistory(context.Background(), "DEV-1", 10)
+	if err != nil {
+		t.Fatalf("GetBatteryHistory failed: %v", err)
+	}
+	if len(history) != 1 || history[0].BatteryPercent != 88 {
+		t.Fatalf("unexpected battery history: %+v", history)
+	}
+}
+

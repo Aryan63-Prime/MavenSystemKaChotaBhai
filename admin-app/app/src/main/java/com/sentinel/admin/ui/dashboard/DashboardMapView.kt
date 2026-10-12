@@ -26,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,6 +48,21 @@ import androidx.compose.ui.viewinterop.AndroidView
 @SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
 @Composable
 fun DashboardMapView(
+    markers: List<DeviceMarker>,
+    onMarkerClick: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    // Primary vector tile renderer backed by OpenFreeMap via MapLibre Native
+    com.sentinel.admin.ui.map.NativeFleetMapLibreView(
+        markers = markers,
+        onMarkerClick = onMarkerClick,
+        modifier = modifier
+    )
+}
+
+@SuppressLint("SetJavaScriptEnabled", "JavascriptInterface")
+@Composable
+fun LeafletDashboardMapViewFallback(
     markers: List<DeviceMarker>,
     onMarkerClick: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -84,23 +100,25 @@ fun DashboardMapView(
         }
     }
 
-    val markersJson = markers.joinToString(separator = ",", prefix = "[", postfix = "]") { marker ->
-        val cleanSnippet = marker.snippet.replace(" (Charging)", "")
-        """
-        {
-            "deviceId": "${marker.deviceId}",
-            "uniqueKey": "${marker.uniqueKey}",
-            "deviceName": "${marker.deviceName.replace("'", "\\'")}",
-            "snippet": "${cleanSnippet.replace("'", "\\'")}",
-            "latitude": ${marker.latitude},
-            "longitude": ${marker.longitude},
-            "isOnline": ${marker.isOnline},
-            "battery": ${marker.battery},
-            "network": "${marker.network}",
-            "isMoving": ${marker.isMoving},
-            "isEmergency": ${marker.isEmergency}
+    val markersJson = remember(markers) {
+        val array = org.json.JSONArray()
+        markers.forEach { marker ->
+            val obj = org.json.JSONObject().apply {
+                put("deviceId", marker.deviceId)
+                put("uniqueKey", marker.uniqueKey)
+                put("deviceName", marker.deviceName)
+                put("snippet", marker.snippet.replace(" (Charging)", ""))
+                put("latitude", marker.latitude)
+                put("longitude", marker.longitude)
+                put("isOnline", marker.isOnline)
+                put("battery", marker.battery)
+                put("network", marker.network)
+                put("isMoving", marker.isMoving)
+                put("isEmergency", marker.isEmergency)
+            }
+            array.put(obj)
         }
-        """.trimIndent()
+        array.toString()
     }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -110,27 +128,40 @@ fun DashboardMapView(
                 val cssContent = try {
                     ctx.assets.open("leaflet.css").bufferedReader().use { it.readText() }
                 } catch (e: Exception) {
+                    android.util.Log.e("Sentinel:Map", "Error reading leaflet.css", e)
                     ""
                 }
                 val jsContent = try {
                     ctx.assets.open("leaflet.js").bufferedReader().use { it.readText() }
                 } catch (e: Exception) {
+                    android.util.Log.e("Sentinel:Map", "Error reading leaflet.js", e)
                     ""
                 }
 
                 WebView(ctx).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
-                    settings.allowFileAccess = true
-                    settings.allowContentAccess = true
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
                     @Suppress("DEPRECATION")
-                    settings.allowFileAccessFromFileURLs = true
+                    settings.allowFileAccessFromFileURLs = false
                     @Suppress("DEPRECATION")
-                    settings.allowUniversalAccessFromFileURLs = true
-                    settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                    settings.allowUniversalAccessFromFileURLs = false
+                    settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                    webChromeClient = object : android.webkit.WebChromeClient() {
+                        override fun onConsoleMessage(msg: android.webkit.ConsoleMessage?): Boolean {
+                            android.util.Log.d("Sentinel:Map", "Console [${msg?.messageLevel()}]: ${msg?.message()} (${msg?.sourceId()}:${msg?.lineNumber()})")
+                            return true
+                        }
+                    }
                     webViewClient = object : WebViewClient() {
+                        override fun onReceivedError(view: WebView?, request: android.webkit.WebResourceRequest?, error: android.webkit.WebResourceError?) {
+                            super.onReceivedError(view, request, error)
+                            android.util.Log.e("Sentinel:Map", "ResourceError: ${request?.url} -> ${error?.description}")
+                        }
                         override fun onPageFinished(view: WebView?, url: String?) {
                             super.onPageFinished(view, url)
+                            android.util.Log.d("Sentinel:Map", "onPageFinished: $url, evaluating updateMarkers with count ${markers.size}")
                             view?.evaluateJavascript(
                                 "if (typeof updateMarkers === 'function') { updateMarkers($markersJson); }",
                                 null
@@ -291,12 +322,19 @@ fun DashboardMapView(
                     <body>
                         <div id="map"></div>
                         <script>
-                            var map = L.map('map', { zoomControl: false }).setView([0.0, 0.0], 2);
-                            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                                maxZoom: 20,
-                                subdomains: 'abcd',
-                                attribution: '© CARTO'
-                            }).addTo(map);
+                            console.log("Starting map init, L defined = " + (typeof L !== 'undefined'));
+                            var map;
+                            try {
+                                map = L.map('map', { zoomControl: false }).setView([0.0, 0.0], 2);
+                                L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                                    maxZoom: 20,
+                                    subdomains: 'abcd',
+                                    attribution: '© CARTO'
+                                }).addTo(map);
+                                console.log("Map initialized successfully");
+                            } catch (e) {
+                                console.error("Map init exception: " + e.message);
+                            }
 
                             var currentMarkers = [];
                             var currentLayerGroup = L.layerGroup().addTo(map);
@@ -335,9 +373,20 @@ fun DashboardMapView(
                                         var battClass = m.battery <= 20 ? 'chip-battery low' : 'chip-battery';
                                         var statusHtml = m.isMoving ? '<span class="chip-status moving">MOVING</span>' : '<span class="chip-status stationary">PARKED</span>';
                                         
+                                        function escapeHtml(str) {
+                                            if (!str) return 'Device';
+                                            return String(str)
+                                                .replace(/&/g, '&amp;')
+                                                .replace(/</g, '&lt;')
+                                                .replace(/>/g, '&gt;')
+                                                .replace(/"/g, '&quot;')
+                                                .replace(/'/g, '&#039;');
+                                        }
+
+                                        var safeName = escapeHtml(m.deviceName);
                                         var html = '<div class="fleet-marker">' +
                                                    '<div class="fleet-chip">' +
-                                                   '<span class="chip-name">' + m.deviceName + '</span>' +
+                                                   '<span class="chip-name">' + safeName + '</span>' +
                                                    '<span class="' + battClass + '">⚡' + m.battery + '%</span>' +
                                                    statusHtml +
                                                    '</div>' +
@@ -409,7 +458,7 @@ fun DashboardMapView(
                     </body>
                     </html>
                 """.trimIndent()
-                loadDataWithBaseURL("file:///android_asset/", html, "text/html", "UTF-8", null)
+                loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
             }
         },
         update = { webView ->
@@ -417,6 +466,9 @@ fun DashboardMapView(
                 "if (typeof updateMarkers === 'function') { updateMarkers($markersJson); }",
                 null
             )
+        },
+        onRelease = { webView ->
+            webView.destroy()
         }
     )
 

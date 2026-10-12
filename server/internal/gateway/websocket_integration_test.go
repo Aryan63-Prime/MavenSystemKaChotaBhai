@@ -609,6 +609,7 @@ func signedTokenWithSecret(t *testing.T, secret string, deviceID string) string 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.Claims{
 		DeviceID: deviceID,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "project-sentinel",
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour)),
 		},
 	})

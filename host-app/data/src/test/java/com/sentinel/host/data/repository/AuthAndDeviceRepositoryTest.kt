@@ -185,6 +185,7 @@ internal class FakeConnectionRepository(
 internal class FakeSessionManager : SessionManager {
     private var token: String? = null
     private var serverUrl: String? = null
+    private var enrollmentApproved: Boolean = false
 
     override fun saveToken(token: String) { this.token = token }
     override fun getToken(): String? = token
@@ -195,6 +196,24 @@ internal class FakeSessionManager : SessionManager {
     override fun clear() {
         token = null
         serverUrl = null
+        enrollmentApproved = false
+    }
+
+    override fun setEnrollmentApproved(approved: Boolean) { enrollmentApproved = approved }
+    override fun isEnrollmentApproved(): Boolean = enrollmentApproved
+    override fun setCaptureApproval(approved: Boolean) { setEnrollmentApproved(approved) }
+}
+
+class CaptureApprovalTest {
+    @Test
+    fun `enrollment approval defaults to false and updates on explicit approval`() {
+        val sessionMgr = FakeSessionManager()
+        assertFalse(sessionMgr.isEnrollmentApproved())
+        sessionMgr.setEnrollmentApproved(true)
+        assertTrue(sessionMgr.isEnrollmentApproved())
+        sessionMgr.clear()
+        assertFalse(sessionMgr.isEnrollmentApproved())
     }
 }
+
 

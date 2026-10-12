@@ -109,14 +109,18 @@ func TestNewCollectorWithClock_NilFallback(t *testing.T) {
 // --- Handler tests ---
 
 type mockAuthenticator struct {
-	err error
+	identity string
+	err      error
 }
 
 func (m *mockAuthenticator) Authenticate(token string) (string, error) {
 	if m.err != nil {
 		return "", m.err
 	}
-	return "test-device", nil
+	if m.identity != "" {
+		return m.identity, nil
+	}
+	return "ADMIN-0001", nil
 }
 
 func TestHandler_Unauthorized_NoHeader(t *testing.T) {
@@ -204,5 +208,16 @@ func TestHandler_NilCollectorFallback(t *testing.T) {
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestMetricsRejectsHostCredential(t *testing.T) {
+	h := NewHandler(NewCollector(), &mockAuthenticator{identity: "HOST-0001"})
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	req.Header.Set("Authorization", "Bearer valid-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
 	}
 }

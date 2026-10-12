@@ -27,12 +27,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -48,9 +52,19 @@ fun RecordingsScreen(
     modifier: Modifier = Modifier
 ) {
     val recordings by viewModel.recordings.collectAsState()
+    val playbackError by viewModel.playbackError.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
 
+    LaunchedEffect(playbackError) {
+        playbackError?.let { err ->
+            snackbarHostState.showSnackbar(err)
+            viewModel.clearPlaybackError()
+        }
+    }
+
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text("Saved Audio Recordings", fontWeight = FontWeight.Bold) },

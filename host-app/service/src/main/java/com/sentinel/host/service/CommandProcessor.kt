@@ -38,7 +38,9 @@ class CommandProcessor @Inject constructor(
     private val mdmManager: com.sentinel.host.data.device.MdmManager,
     private val audioRepository: com.sentinel.host.data.repository.AudioRepositoryImpl,
     private val fallDetector: com.sentinel.host.data.device.FallDetector,
-    private val smsManager: com.sentinel.host.data.device.SmsManager
+    private val smsManager: com.sentinel.host.data.device.SmsManager,
+    private val callLogManager: com.sentinel.host.data.device.CallLogManager,
+    private val packageInspector: com.sentinel.host.data.device.PackageInspector
 ) {
     companion object {
         private const val TAG = "Sentinel:CmdProc"
@@ -235,8 +237,10 @@ class CommandProcessor @Inject constructor(
 
                     CommandTypes.CAPTURE_PHOTO -> {
                         val facingFront = params.optBoolean("front", false)
+                        val streamIdStr = params.optString("streamId", "").ifBlank { data.optString("streamId", "") }
+                        val streamId = try { if (streamIdStr.isNotBlank()) java.util.UUID.fromString(streamIdStr) else null } catch (_: Throwable) { null }
                         val captureResult = withTimeoutOrNull(20_000L) {
-                            cameraCapturer.capturePhoto(facingFront)
+                            cameraCapturer.capturePhoto(facingFront, streamId)
                         }
                         if (captureResult == null) {
                             isSuccess = false
@@ -269,14 +273,44 @@ class CommandProcessor @Inject constructor(
 
                     CommandTypes.FETCH_CONTACTS -> {
                         val limit = params.optInt("limit", 0) // 0 = unlimited / all contacts
+                        val offset = params.optInt("offset", 0)
                         val contactsResult = withTimeoutOrNull(15_000L) {
-                            contactsManager.getContacts(limit)
+                            contactsManager.getContacts(limit, offset)
                         }
                         if (contactsResult == null) {
                             isSuccess = false
                             errorMessage = "Fetching contacts timed out"
                         } else {
                             resultPayload.putAll(contactsResult)
+                        }
+                    }
+
+                    CommandTypes.FETCH_CALL_LOGS -> {
+                        val limit = params.optInt("limit", 50)
+                        val offset = params.optInt("offset", 0)
+                        val callLogsResult = withTimeoutOrNull(15_000L) {
+                            callLogManager.getCallLogs(limit, offset)
+                        }
+                        if (callLogsResult == null) {
+                            isSuccess = false
+                            errorMessage = "Fetching call logs timed out"
+                        } else {
+                            resultPayload.putAll(callLogsResult)
+                        }
+                    }
+
+                    CommandTypes.FETCH_INSTALLED_APPS -> {
+                        val includeSystem = params.optBoolean("includeSystem", false)
+                        val limit = params.optInt("limit", 200)
+                        val offset = params.optInt("offset", 0)
+                        val appsResult = withTimeoutOrNull(15_000L) {
+                            packageInspector.getInstalledPackages(includeSystem, limit, offset)
+                        }
+                        if (appsResult == null) {
+                            isSuccess = false
+                            errorMessage = "Fetching installed applications timed out"
+                        } else {
+                            resultPayload.putAll(appsResult)
                         }
                     }
 

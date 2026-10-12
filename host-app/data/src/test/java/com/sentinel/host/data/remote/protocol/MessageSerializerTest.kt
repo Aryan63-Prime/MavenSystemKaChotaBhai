@@ -192,12 +192,34 @@ class MessageSerializerTest {
     }
 
     @Test
+    fun `deserialize LISTEN with streamId and maxDurationSeconds`() {
+        val json = """{"type":"LISTEN","version":1,"timestamp":0,"sequence":7,"data":{"deviceId":"HOST-001","streamId":"550e8400-e29b-41d4-a716-446655440000","maxDurationSeconds":120}}"""
+        val msg = serializer.deserialize(json)
+        assertTrue(msg is IncomingMessage.Listen)
+        val listen = msg as IncomingMessage.Listen
+        assertEquals("HOST-001", listen.deviceId)
+        assertEquals("550e8400-e29b-41d4-a716-446655440000", listen.streamId)
+        assertEquals(120L, listen.maxDurationSeconds)
+    }
+
+    @Test
     fun `deserialize STOP`() {
         val json = """{"type":"STOP","version":1,"timestamp":0,"sequence":8,"data":{"deviceId":"HOST-001"}}"""
         val msg = serializer.deserialize(json)
         assertTrue(msg is IncomingMessage.Stop)
         val stop = msg as IncomingMessage.Stop
         assertEquals("HOST-001", stop.deviceId)
+        assertEquals(8L, stop.sequence)
+    }
+
+    @Test
+    fun `deserialize STOP with streamId`() {
+        val json = """{"type":"STOP","version":1,"timestamp":0,"sequence":8,"data":{"deviceId":"HOST-001","streamId":"550e8400-e29b-41d4-a716-446655440000"}}"""
+        val msg = serializer.deserialize(json)
+        assertTrue(msg is IncomingMessage.Stop)
+        val stop = msg as IncomingMessage.Stop
+        assertEquals("HOST-001", stop.deviceId)
+        assertEquals("550e8400-e29b-41d4-a716-446655440000", stop.streamId)
         assertEquals(8L, stop.sequence)
     }
 

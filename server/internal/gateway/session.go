@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"strings"
 	"sync"
 	"time"
 
@@ -12,7 +13,8 @@ type Session struct {
 
 	connectionID string
 
-	deviceID string
+	deviceID              string
+	authenticatedDeviceID string
 
 	authenticated bool
 
@@ -70,6 +72,7 @@ func (s *Session) SetAuthenticated(deviceID string) {
 	defer s.mu.Unlock()
 
 	s.deviceID = deviceID
+	s.authenticatedDeviceID = deviceID
 	s.authenticated = true
 }
 
@@ -86,7 +89,7 @@ func (s *Session) AuthenticatedDeviceID() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.deviceID
+	return s.authenticatedDeviceID
 }
 
 // DeviceID returns the current device identity (registered or authenticated).
@@ -183,10 +186,10 @@ func (s *Session) Snapshot() SessionSnapshot {
 	}
 }
 
-// IsAdmin reports whether this is an authenticated admin session (no device registration).
+// IsAdmin uses the signed principal namespace, never host registration state.
 func (s *Session) IsAdmin() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	return s.authenticated && !s.registered
+	return s.authenticated && strings.HasPrefix(s.authenticatedDeviceID, "ADMIN-") && len(s.authenticatedDeviceID) > len("ADMIN-")
 }

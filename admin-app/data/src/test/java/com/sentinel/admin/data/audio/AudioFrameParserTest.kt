@@ -111,6 +111,49 @@ class AudioFrameParserTest {
         assertNull(AudioFrameParser.parse(headerOnly))
     }
 
+    @Test
+    fun `parse valid AUDIO_V2 frame extracts streamId and all fields`() {
+        val streamId = java.util.UUID.randomUUID()
+        val payload = byteArrayOf(0x0A, 0x0B, 0x0C)
+        val frame = buildFrameV2(
+            streamId = streamId,
+            sequence = 105L,
+            timestamp = 999999L,
+            payload = payload
+        )
+
+        val result = AudioFrameParser.parse(frame)
+
+        assertNotNull(result)
+        assertEquals(PacketType.AUDIO_V2, result!!.packetType)
+        assertEquals(streamId, result.streamId)
+        assertEquals(105L, result.sequence)
+        assertEquals(999999L, result.timestamp)
+        assertArrayEquals(payload, result.payload)
+    }
+
+    @Test
+    fun `parse rejects truncated AUDIO_V2 frame shorter than 29 bytes`() {
+        val truncatedV2 = ByteArray(AudioConstants.HEADER_V2_SIZE - 1)
+        truncatedV2[0] = PacketType.AUDIO_V2
+        assertNull(AudioFrameParser.parse(truncatedV2))
+    }
+
+    @Test
+    fun `parse rejects header-only AUDIO_V2 frame with no payload`() {
+        val streamId = java.util.UUID.randomUUID()
+        val headerOnly = ByteBuffer.allocate(AudioConstants.HEADER_V2_SIZE)
+            .order(ByteOrder.BIG_ENDIAN)
+            .put(PacketType.AUDIO_V2)
+            .putLong(streamId.mostSignificantBits)
+            .putLong(streamId.leastSignificantBits)
+            .putInt(1)
+            .putLong(100L)
+            .array()
+
+        assertNull(AudioFrameParser.parse(headerOnly))
+    }
+
     // ============================================================
     // Helpers
     // ============================================================
@@ -124,6 +167,23 @@ class AudioFrameParserTest {
         val buffer = ByteBuffer.allocate(AudioConstants.HEADER_SIZE + payload.size)
             .order(ByteOrder.BIG_ENDIAN)
         buffer.put(packetType)
+        buffer.putInt(sequence.toInt())
+        buffer.putLong(timestamp)
+        buffer.put(payload)
+        return buffer.array()
+    }
+
+    private fun buildFrameV2(
+        streamId: java.util.UUID,
+        sequence: Long,
+        timestamp: Long,
+        payload: ByteArray
+    ): ByteArray {
+        val buffer = ByteBuffer.allocate(AudioConstants.HEADER_V2_SIZE + payload.size)
+            .order(ByteOrder.BIG_ENDIAN)
+        buffer.put(PacketType.AUDIO_V2)
+        buffer.putLong(streamId.mostSignificantBits)
+        buffer.putLong(streamId.leastSignificantBits)
         buffer.putInt(sequence.toInt())
         buffer.putLong(timestamp)
         buffer.put(payload)

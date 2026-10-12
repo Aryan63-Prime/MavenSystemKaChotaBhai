@@ -119,8 +119,8 @@ internal fun IncomingMessage.toEvent(): ConnectionEvent? = when (this) {
     is IncomingMessage.FileDownloadReq -> ConnectionEvent.FileDownloadReq(sequence, path, offset, nonce)
     is IncomingMessage.FileChunkAck -> ConnectionEvent.FileChunkAck(sequence, path, ackSequence)
     is IncomingMessage.FileStopReq -> ConnectionEvent.FileStopReq(sequence, path)
-    is IncomingMessage.Listen -> ConnectionEvent.StartAudio(sequence, deviceId)
-    is IncomingMessage.Stop -> ConnectionEvent.StopAudio(sequence, deviceId)
+    is IncomingMessage.Listen -> ConnectionEvent.StartAudio(sequence, deviceId, streamId, maxDurationSeconds)
+    is IncomingMessage.Stop -> ConnectionEvent.StopAudio(sequence, deviceId, streamId)
     is IncomingMessage.Pong -> null
     is IncomingMessage.Unknown -> null
 }

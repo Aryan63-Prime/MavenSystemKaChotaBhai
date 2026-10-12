@@ -84,6 +84,7 @@ func signedTokenWithExpiration(t *testing.T, secret string, deviceID string, exp
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, Claims{
 		DeviceID: deviceID,
 		RegisteredClaims: jwt.RegisteredClaims{
+			Issuer:    "project-sentinel",
 			ExpiresAt: jwt.NewNumericDate(expiresAt),
 		},
 	})
@@ -94,4 +95,19 @@ func signedTokenWithExpiration(t *testing.T, secret string, deviceID string, exp
 	}
 
 	return signed
+}
+
+func TestRejectsMissingExpiryAndWrongIssuer(t *testing.T) {
+	for _, claims := range []Claims{
+		{DeviceID: "HOST-0001", RegisteredClaims: jwt.RegisteredClaims{Issuer: "project-sentinel"}},
+		{DeviceID: "HOST-0001", RegisteredClaims: jwt.RegisteredClaims{Issuer: "other", ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Hour))}},
+	} {
+		token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("test_secret"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = New("test_secret").Authenticate(token); !errors.Is(err, ErrInvalidToken) {
+			t.Fatal("token without valid required claims accepted")
+		}
+	}
 }

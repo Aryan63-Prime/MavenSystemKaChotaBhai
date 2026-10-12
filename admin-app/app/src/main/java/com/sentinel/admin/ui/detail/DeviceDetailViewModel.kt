@@ -21,6 +21,10 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import com.sentinel.admin.ui.common.RefreshOperation
 import com.sentinel.shared.protocol.CommandTypes
 import javax.inject.Inject
 
@@ -71,6 +75,8 @@ class DeviceDetailViewModel @Inject constructor(
     @Volatile
     private var initialCommandsSent = false
 
+    private var userRequestedDiagnostics = false
+
     init {
         loadDevice()
         observeAudioState()
@@ -94,7 +100,7 @@ class DeviceDetailViewModel @Inject constructor(
                 if (wsState is com.sentinel.admin.data.remote.websocket.WebSocketState.Connected) {
                     if (!initialCommandsSent) {
                         initialCommandsSent = true
-                        sendSystemInfoCommand()
+                        sendSystemInfoCommand(showDialog = false)
                     }
                 } else if (wsState is com.sentinel.admin.data.remote.websocket.WebSocketState.Disconnected ||
                            wsState is com.sentinel.admin.data.remote.websocket.WebSocketState.Failed) {
@@ -211,27 +217,114 @@ class DeviceDetailViewModel @Inject constructor(
         }
     }
 
+    private var refreshJob: kotlinx.coroutines.Job? = null
+    private var settlingJob: kotlinx.coroutines.Job? = null
+    private var nextRefreshAttemptId: Long = 0L
+
     fun refresh() {
-        _uiState.update { it.copy(isRefreshing = true, errorMessage = null) }
-        viewModelScope.launch {
-            deviceRepository.getDevice(deviceId)
-                .onSuccess { device ->
-                    _uiState.update {
-                        it.copy(
-                            device = device,
-                            isRefreshing = false,
-                            errorMessage = null
-                        )
-                    }
-                }
-                .onFailure { error ->
-                    _uiState.update {
-                        it.copy(
-                            isRefreshing = false,
-                            errorMessage = error.message ?: "Failed to refresh"
-                        )
-                    }
-                }
+        if (_uiState.value.refreshOperation is RefreshOperation.Running) {
+            return
+        }
+        settlingJob?.cancel()
+        val attemptId = ++nextRefreshAttemptId
+        _uiState.update {
+            it.copy(
+                refreshOperation = RefreshOperation.Running(attemptId),
+                isRefreshing = true,
+                errorMessage = null
+            )
+        }
+        refreshJob = viewModelScope.launch {
+            try {
+                val device = deviceRepository.fetchFreshDevice(deviceId).getOrThrow()
+                currentCoroutineContext().ensureActive()
+                completeSuccessIfRunning(attemptId, device)
+            } catch (cancelled: CancellationException) {
+                completeCancelledIfRunning(attemptId)
+                throw cancelled
+            } catch (failure: Exception) {
+                completeErrorIfRunning(attemptId, failure)
+            } finally {
+                clearUnfinishedRunningAttemptIfOwned(attemptId)
+            }
+        }
+    }
+
+    private fun completeSuccessIfRunning(attemptId: Long, device: Device) {
+        _uiState.update { current ->
+            if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
+                current.copy(
+                    device = device,
+                    isRefreshing = false,
+                    errorMessage = null,
+                    refreshOperation = RefreshOperation.Success(attemptId)
+                )
+            } else current
+        }
+        scheduleSettling(attemptId)
+    }
+
+    private fun completeErrorIfRunning(attemptId: Long, error: Throwable) {
+        val errorMsg = error.message ?: "Failed to refresh"
+        _uiState.update { current ->
+            if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
+                current.copy(
+                    isRefreshing = false,
+                    errorMessage = errorMsg,
+                    refreshOperation = RefreshOperation.Error(attemptId, errorMsg)
+                )
+            } else current
+        }
+        scheduleSettling(attemptId)
+    }
+
+    private fun completeCancelledIfRunning(attemptId: Long) {
+        _uiState.update { current ->
+            if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
+                current.copy(
+                    isRefreshing = false,
+                    refreshOperation = RefreshOperation.Cancelled(attemptId)
+                )
+            } else current
+        }
+    }
+
+    private fun clearUnfinishedRunningAttemptIfOwned(attemptId: Long) {
+        _uiState.update { current ->
+            if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
+                current.copy(
+                    isRefreshing = false,
+                    refreshOperation = RefreshOperation.Idle
+                )
+            } else current
+        }
+    }
+
+    private fun scheduleSettling(attemptId: Long) {
+        settlingJob?.cancel()
+        settlingJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(1800)
+            _uiState.update { current ->
+                val op = current.refreshOperation
+                if ((op is RefreshOperation.Success && op.attemptId == attemptId) ||
+                    (op is RefreshOperation.Error && op.attemptId == attemptId) ||
+                    (op is RefreshOperation.Cancelled && op.attemptId == attemptId)
+                ) {
+                    current.copy(refreshOperation = RefreshOperation.Idle)
+                } else current
+            }
+        }
+    }
+
+    fun consumeRefreshOutcome(attemptId: Long) {
+        _uiState.update { current ->
+            val op = current.refreshOperation
+            if (op.attemptId == attemptId && (op is RefreshOperation.Success || op is RefreshOperation.Error || op is RefreshOperation.Cancelled)) {
+                settlingJob?.cancel()
+                current.copy(refreshOperation = RefreshOperation.Idle)
+            } else {
+                current
+            }
         }
     }
 
@@ -245,9 +338,10 @@ class DeviceDetailViewModel @Inject constructor(
 
     fun onListenClick() {
         val target = audioTargetDeviceId
-        audioRepository.listen(target)
+        val streamId = java.util.UUID.randomUUID()
+        audioRepository.listen(target, streamId)
         sendCommand("START_AUDIO_STREAM")
-        audioMonitor.start(target)
+        audioMonitor.start(target, streamId)
     }
 
     fun onStopClick() {
@@ -255,7 +349,8 @@ class DeviceDetailViewModel @Inject constructor(
             audioMonitor.stopRecording()
         }
         val target = audioTargetDeviceId
-        audioRepository.stopListening(target)
+        val currentStream = audioMonitor.activeStreamId
+        audioRepository.stopListening(target, currentStream)
         sendCommand("STOP_AUDIO_STREAM")
         audioMonitor.stop()
     }
@@ -304,7 +399,11 @@ class DeviceDetailViewModel @Inject constructor(
     // Air Commands Execution & Listening
     // ============================================================
 
-    fun sendSystemInfoCommand() {
+    fun sendSystemInfoCommand(showDialog: Boolean = true) {
+        userRequestedDiagnostics = showDialog
+        if (showDialog && _uiState.value.diagnosticsData.isNotEmpty()) {
+            _uiState.update { it.copy(showDiagnosticsDialog = true) }
+        }
         val model = _uiState.value.device?.model ?: if (deviceId.contains("_")) deviceId.substringAfter("_") else ""
         val params = org.json.JSONObject().apply {
             if (model.isNotBlank()) put("targetModel", model)
@@ -377,6 +476,7 @@ class DeviceDetailViewModel @Inject constructor(
     }
 
     fun dismissDialogs() {
+        userRequestedDiagnostics = false
         _uiState.update {
             it.copy(
                 showDiagnosticsDialog = false,
@@ -387,9 +487,38 @@ class DeviceDetailViewModel @Inject constructor(
                 showAddressBookDialog = false,
                 showScreenshotDialog = false,
                 showPreviewDialog = false,
+                showCallLogsDialog = false,
+                showInstalledAppsDialog = false,
                 commandStatusMessage = null
             )
         }
+    }
+
+    fun openCallLogsDialog() {
+        _uiState.update { it.copy(showCallLogsDialog = true) }
+        val params = org.json.JSONObject().apply {
+            put("limit", 100)
+            put("offset", 0)
+        }
+        sendCommand(com.sentinel.shared.protocol.CommandTypes.FETCH_CALL_LOGS, params)
+    }
+
+    fun dismissCallLogsDialog() {
+        _uiState.update { it.copy(showCallLogsDialog = false) }
+    }
+
+    fun openInstalledAppsDialog() {
+        _uiState.update { it.copy(showInstalledAppsDialog = true) }
+        val params = org.json.JSONObject().apply {
+            put("includeSystem", true)
+            put("limit", 300)
+            put("offset", 0)
+        }
+        sendCommand(com.sentinel.shared.protocol.CommandTypes.FETCH_INSTALLED_APPS, params)
+    }
+
+    fun dismissInstalledAppsDialog() {
+        _uiState.update { it.copy(showInstalledAppsDialog = false) }
     }
 
     private fun sendCommand(command: String, params: org.json.JSONObject = org.json.JSONObject()) {
@@ -536,7 +665,10 @@ class DeviceDetailViewModel @Inject constructor(
                                 map[key] = payload.get(key)
                             }
                             _uiState.update {
-                                it.copy(showDiagnosticsDialog = true, diagnosticsData = map)
+                                it.copy(
+                                    showDiagnosticsDialog = if (userRequestedDiagnostics) true else it.showDiagnosticsDialog,
+                                    diagnosticsData = map
+                                )
                             }
                         }
 
@@ -604,6 +736,46 @@ class DeviceDetailViewModel @Inject constructor(
                         "TRIGGER_BEACON" -> {
                             _uiState.update {
                                 it.copy(commandStatusMessage = "Beacon triggered on Host device successfully!")
+                            }
+                        }
+
+                        "FETCH_CALL_LOGS" -> {
+                            val jsonArray = payload.optJSONArray("callLogs")
+                            val list = mutableListOf<Map<String, Any>>()
+                            if (jsonArray != null) {
+                                for (i in 0 until jsonArray.length()) {
+                                    val obj = jsonArray.optJSONObject(i) ?: continue
+                                    val map = mutableMapOf<String, Any>()
+                                    val keys = obj.keys()
+                                    while (keys.hasNext()) {
+                                        val k = keys.next()
+                                        map[k] = obj.get(k)
+                                    }
+                                    list.add(map)
+                                }
+                            }
+                            _uiState.update {
+                                it.copy(callLogsList = list, showCallLogsDialog = true)
+                            }
+                        }
+
+                        "FETCH_INSTALLED_APPS" -> {
+                            val jsonArray = payload.optJSONArray("apps")
+                            val list = mutableListOf<Map<String, Any>>()
+                            if (jsonArray != null) {
+                                for (i in 0 until jsonArray.length()) {
+                                    val obj = jsonArray.optJSONObject(i) ?: continue
+                                    val map = mutableMapOf<String, Any>()
+                                    val keys = obj.keys()
+                                    while (keys.hasNext()) {
+                                        val k = keys.next()
+                                        map[k] = obj.get(k)
+                                    }
+                                    list.add(map)
+                                }
+                            }
+                            _uiState.update {
+                                it.copy(installedAppsList = list, showInstalledAppsDialog = true)
                             }
                         }
 

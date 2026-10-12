@@ -82,6 +82,162 @@ class AudioPipelineTest {
         assertFalse(pipeline.isRunning)
     }
 
+    @Test
+    fun `stop unblocks stuck audio read and terminates cleanly without hang`() = runBlocking {
+        val readEnteredLatch = java.util.concurrent.CountDownLatch(1)
+        val unblockedLatch = java.util.concurrent.CountDownLatch(1)
+
+        val blockingRecorder = object : AudioRecorder {
+            @Volatile override var isRecording = false
+
+            override fun start(): Boolean {
+                isRecording = true
+                return true
+            }
+
+            override fun stop() {
+                isRecording = false
+                unblockedLatch.countDown()
+            }
+
+            override fun read(buffer: ShortArray, offset: Int, size: Int): Int {
+                if (!isRecording) return -1
+                readEnteredLatch.countDown()
+                // Indefinitely wait until stop() is invoked: NO independent fallback timeout
+                unblockedLatch.await()
+                return if (isRecording) size else -1
+            }
+
+            override fun close() { stop() }
+        }
+
+        val encoder = FakeOpusEncoder()
+        val pipeline = AudioPipeline(blockingRecorder, encoder)
+
+        val started = pipeline.start()
+        assertTrue(started)
+        assertTrue(pipeline.isRunning)
+
+        // Entry barrier: guarantee read() has entered blocking wait before calling stop()
+        assertTrue("read() must enter blocking state before stop", readEnteredLatch.await(2, java.util.concurrent.TimeUnit.SECONDS))
+
+        // Calling pipeline.stop() must unblock the read immediately, terminate cleanly,
+        // and safely close the encoder without hanging.
+        pipeline.stop()
+
+        assertFalse(pipeline.isRunning)
+        assertFalse(blockingRecorder.isRecording)
+        assertTrue(encoder.isClosed)
+    }
+
+    @Test
+    fun `stop handles join timeout by preserving session and blocking restart without destroying encoder`() = runBlocking {
+        val readEnteredLatch = java.util.concurrent.CountDownLatch(1)
+
+        val uncooperativeRecorder = object : AudioRecorder {
+            @Volatile override var isRecording = false
+
+            override fun start(): Boolean {
+                isRecording = true
+                return true
+            }
+
+            override fun stop() {
+                // Simulates broken HAL driver: fails to unblock read()
+            }
+
+            override fun read(buffer: ShortArray, offset: Int, size: Int): Int {
+                readEnteredLatch.countDown()
+                try {
+                    Thread.sleep(5000L)
+                } catch (e: InterruptedException) {
+                    // ignored
+                }
+                return -1
+            }
+
+            override fun close() {}
+        }
+
+        val encoder = FakeOpusEncoder()
+        val pipeline = AudioPipeline(uncooperativeRecorder, encoder)
+
+        val started = pipeline.start()
+        assertTrue(started)
+        assertTrue(pipeline.isRunning)
+
+        // Entry barrier: guarantee read() has started blocking
+        assertTrue(readEnteredLatch.await(2, java.util.concurrent.TimeUnit.SECONDS))
+
+        // Calling pipeline.stop() must timeout waiting for join, throw exception,
+        // and preserve the unfinished session without destroying the encoder
+        var thrown = false
+        try {
+            pipeline.stop()
+        } catch (e: IllegalStateException) {
+            thrown = true
+        }
+        assertTrue("stop() must throw cleanup failure exception on join timeout", thrown)
+
+        // Unfinished session is preserved: encoder must NOT be closed while thread is stuck!
+        assertFalse("Encoder must NOT be closed when join times out", encoder.isClosed)
+
+        // Restart must be blocked!
+        val restartResult = pipeline.start()
+        assertFalse("Restart must be blocked after incomplete teardown", restartResult)
+    }
+
+    @Test
+    fun `stop preserves session and blocks restart when join is interrupted or throws exception`() {
+        val readEnteredLatch = java.util.concurrent.CountDownLatch(1)
+        val blockingRecorder = object : AudioRecorder {
+            override val isRecording: Boolean get() = true
+            override fun start(): Boolean = true
+            override fun stop() {}
+            override fun read(buffer: ShortArray, offset: Int, size: Int): Int {
+                readEnteredLatch.countDown()
+                try {
+                    Thread.sleep(5000L)
+                } catch (e: InterruptedException) {
+                    // ignored
+                }
+                return -1
+            }
+            override fun close() {}
+        }
+
+        val encoder = FakeOpusEncoder()
+        val pipeline = AudioPipeline(blockingRecorder, encoder)
+
+        val started = pipeline.start()
+        assertTrue(started)
+        assertTrue(pipeline.isRunning)
+
+        // Ensure worker thread is actively blocking in read()
+        assertTrue(readEnteredLatch.await(2, java.util.concurrent.TimeUnit.SECONDS))
+
+        // Interrupt current thread before stop() so runBlocking/join throws InterruptedException
+        Thread.currentThread().interrupt()
+        var exceptionThrown = false
+        try {
+            pipeline.stop()
+        } catch (e: Throwable) {
+            exceptionThrown = true
+        } finally {
+            // Clear interrupt status so test runner is not impacted
+            Thread.interrupted()
+        }
+
+        assertTrue("stop() must throw exception when join fails or is interrupted", exceptionThrown)
+
+        // Session must be preserved as unfinished and encoder must NOT be closed!
+        assertFalse("Encoder must NOT be closed when join fails with exception", encoder.isClosed)
+
+        // Restart must be blocked permanently
+        val restartResult = pipeline.start()
+        assertFalse("Restart must be blocked after incomplete teardown due to exception", restartResult)
+    }
+
     // ================================================================
     // Recorder failure
     // ================================================================
