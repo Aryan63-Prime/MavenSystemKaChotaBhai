@@ -65,8 +65,16 @@ class ConnectionRepositoryImpl(
             .onEach { data ->
                 if (data.isNotEmpty()) {
                     when (data[0]) {
-                        0x01.toByte() -> _events.emit(ConnectionEvent.AudioFrameReceived(data))
-                        0x02.toByte() -> _events.emit(ConnectionEvent.FileChunkReceived(data))
+                        com.sentinel.shared.protocol.PacketType.AUDIO,
+                        com.sentinel.shared.protocol.PacketType.AUDIO_V2 -> {
+                            _events.emit(ConnectionEvent.AudioFrameReceived(data))
+                        }
+                        com.sentinel.shared.protocol.PacketType.FILE_CHUNK -> {
+                            _events.emit(ConnectionEvent.FileChunkReceived(data))
+                        }
+                        else -> {
+                            Log.w("Sentinel:WS", "Ignored unknown binary packet type: 0x%02X".format(data[0]))
+                        }
                     }
                 }
             }
