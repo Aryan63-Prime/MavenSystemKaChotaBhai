@@ -48,6 +48,11 @@ func (s *Service) SetForwarder(forwarder FrameForwarder) {
 	s.forwarder = forwarder
 }
 
+// ConnectionChecker checks if a connection is currently active.
+type ConnectionChecker interface {
+	IsConnected(connectionID string) bool
+}
+
 // StartListening registers an admin connection as the listener for a device with optional stream UUID.
 func (s *Service) StartListening(ctx context.Context, adminConnectionID string, targetDeviceID string, streamID ...uuid.UUID) error {
 	cleanTarget := strings.TrimSpace(targetDeviceID)
@@ -70,7 +75,13 @@ func (s *Service) StartListening(ctx context.Context, adminConnectionID string, 
 		return err
 	}
 	if found && currentListener != adminConnectionID {
-		return fmt.Errorf("start listening: device %s already has active listener %s", cleanTarget, currentListener)
+		stillActive := true
+		if checker, ok := s.forwarder.(ConnectionChecker); ok {
+			stillActive = checker.IsConnected(currentListener)
+		}
+		if stillActive {
+			return fmt.Errorf("start listening: device %s already has active listener %s", cleanTarget, currentListener)
+		}
 	}
 
 	if err := s.listeners.SetListener(ctx, cleanTarget, adminConnectionID); err != nil {
@@ -109,9 +120,15 @@ func (s *Service) StopListening(ctx context.Context, adminConnectionID string, t
 		return fmt.Errorf("stop listening: no active listener for device %s", cleanTarget)
 	}
 
-	// Enforce connection ownership
+	// Enforce connection ownership only if current listener is still active
 	if adminConnectionID != "" && currentListener != adminConnectionID {
-		return fmt.Errorf("stop listening: unauthorized connection %s does not own listener %s for %s", adminConnectionID, currentListener, cleanTarget)
+		stillActive := true
+		if checker, ok := s.forwarder.(ConnectionChecker); ok {
+			stillActive = checker.IsConnected(currentListener)
+		}
+		if stillActive {
+			return fmt.Errorf("stop listening: unauthorized connection %s does not own listener %s for %s", adminConnectionID, currentListener, cleanTarget)
+		}
 	}
 
 	if len(streamID) > 0 && streamID[0] != uuid.Nil && s.activeStreams != nil {
@@ -156,17 +173,6 @@ func (s *Service) RouteFrame(ctx context.Context, sourceDeviceID string, frame [
 	var hasActiveStream bool
 	if s.activeStreams != nil {
 		activeStream, hasActiveStream = s.activeStreams[sourceDeviceID]
-		if !hasActiveStream && strings.HasPrefix(sourceDeviceID, "HOST-001-") {
-			activeStream, hasActiveStream = s.activeStreams["HOST-001"]
-		}
-		if !hasActiveStream && sourceDeviceID == "HOST-001" {
-			for _, v := range s.activeStreams {
-				if v != uuid.Nil {
-					activeStream, hasActiveStream = v, true
-					break
-				}
-			}
-		}
 	}
 	s.mu.Unlock()
 
@@ -180,12 +186,6 @@ func (s *Service) RouteFrame(ctx context.Context, sourceDeviceID string, frame [
 	connectionID, found, err := s.listeners.GetListener(ctx, sourceDeviceID)
 	if err != nil {
 		return fmt.Errorf("get listener: %w", err)
-	}
-	if !found && strings.HasPrefix(sourceDeviceID, "HOST-001-") {
-		connectionID, found, err = s.listeners.GetListener(ctx, "HOST-001")
-		if err != nil {
-			return fmt.Errorf("get listener fallback: %w", err)
-		}
 	}
 	if !found {
 		return nil

@@ -127,18 +127,6 @@ class CommandProcessor @Inject constructor(
                     return@launch
                 }
 
-                if (msgType == MessageType.LISTEN || msgType == "LISTEN") {
-                    Log.i(TAG, "Processing LISTEN control message — starting on-demand audio capture")
-                    onStartAudioRequested?.invoke()
-                    return@launch
-                }
-
-                if (msgType == MessageType.STOP || msgType == "STOP") {
-                    Log.i(TAG, "Processing STOP control message — stopping on-demand audio capture")
-                    onStopAudioRequested?.invoke()
-                    return@launch
-                }
-
                 if (msgType != MessageType.COMMAND) return@launch
 
                 val data = json.getJSONObject("data")

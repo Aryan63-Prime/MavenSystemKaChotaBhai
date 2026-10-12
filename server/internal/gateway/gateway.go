@@ -260,6 +260,15 @@ func (g *Gateway) dispatchBinary(client *Client, data []byte) {
 	}
 }
 
+// IsConnected returns true if a client with connectionID is currently connected.
+func (g *Gateway) IsConnected(connectionID string) bool {
+	if g == nil || g.manager == nil {
+		return false
+	}
+	_, ok := g.manager.Get(connectionID)
+	return ok
+}
+
 // ForwardBinary sends a binary frame to a connected client by connection ID.
 // Returns nil if the client is disconnected or the send buffer is full (audio is lossy).
 func (g *Gateway) ForwardBinary(connectionID string, data []byte) error {

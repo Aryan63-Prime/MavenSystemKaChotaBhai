@@ -134,10 +134,10 @@ class SessionManagerImpl(
             return null
         }
 
-        // If an active session for another stream with the same operation exists, reject
+        // If an active session for another stream with the same operation exists, supersede it with the new session
         val anyActiveSameOp = activePermits.values.firstOrNull { it.operation == operation && !it.isExpired(now) }
         if (anyActiveSameOp != null && anyActiveSameOp.streamId != streamId) {
-            return null
+            activePermits.remove(anyActiveSameOp.streamId)
         }
 
         // Validate duration before arithmetic

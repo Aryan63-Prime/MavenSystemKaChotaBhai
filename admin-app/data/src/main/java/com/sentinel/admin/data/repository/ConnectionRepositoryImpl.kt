@@ -73,7 +73,7 @@ class ConnectionRepositoryImpl(
                             _events.emit(ConnectionEvent.FileChunkReceived(data))
                         }
                         else -> {
-                            Log.w("Sentinel:WS", "Ignored unknown binary packet type: 0x%02X".format(data[0]))
+                            android.util.Log.w("Sentinel:WS", "Ignored unknown binary packet type: 0x%02X".format(data[0]))
                         }
                     }
                 }

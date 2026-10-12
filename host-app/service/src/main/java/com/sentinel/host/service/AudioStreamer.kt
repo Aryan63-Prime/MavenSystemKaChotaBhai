@@ -163,8 +163,13 @@ open class AudioStreamer(
         }
 
         if (isStreaming) {
-            Log.i(TAG, "Audio streaming already active — preserving existing deadline")
-            return
+            if (streamId != null && activeStreamId != streamId) {
+                Log.i(TAG, "Audio streaming active with different streamId ($activeStreamId vs $streamId) — restarting pipeline")
+                stopInternal(preserveDeadline = false)
+            } else {
+                Log.i(TAG, "Audio streaming already active — preserving existing deadline")
+                return
+            }
         }
 
         stopInternal(preserveDeadline = false) // Prevent lingering state
