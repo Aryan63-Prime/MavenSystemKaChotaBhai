@@ -62,6 +62,7 @@ fun PermissionScreen(
     var microphoneGranted by remember { mutableStateOf(false) }
     var cameraGranted by remember { mutableStateOf(false) }
     var contactsGranted by remember { mutableStateOf(false) }
+    var callLogGranted by remember { mutableStateOf(false) }
     var smsGranted by remember { mutableStateOf(false) }
     var notificationGranted by remember { mutableStateOf(false) }
     var batteryOptimized by remember { mutableStateOf(false) }
@@ -76,6 +77,7 @@ fun PermissionScreen(
             microphoneGranted = hasPermission(context, Manifest.permission.RECORD_AUDIO)
             cameraGranted = hasPermission(context, Manifest.permission.CAMERA)
             contactsGranted = hasPermission(context, Manifest.permission.READ_CONTACTS)
+            callLogGranted = hasPermission(context, Manifest.permission.READ_CALL_LOG)
             smsGranted = hasPermission(context, Manifest.permission.READ_SMS)
             notificationGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 hasPermission(context, Manifest.permission.POST_NOTIFICATIONS)
@@ -85,7 +87,7 @@ fun PermissionScreen(
     }
 
     val allGranted = locationGranted && backgroundLocationGranted &&
-            microphoneGranted && cameraGranted && contactsGranted && smsGranted &&
+            microphoneGranted && cameraGranted && contactsGranted && callLogGranted && smsGranted &&
             notificationGranted && batteryOptimized
 
     // Permission launchers
@@ -118,6 +120,12 @@ fun PermissionScreen(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         contactsGranted = granted
+    }
+
+    val callLogLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        callLogGranted = granted
     }
 
     val smsLauncher = rememberLauncherForActivityResult(
@@ -230,7 +238,19 @@ fun PermissionScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 6. SMS Access
+        // 6. Call Log Access
+        PermissionCard(
+            title = "Call Log Access",
+            description = "Required to audit incoming and outgoing enterprise calls.",
+            granted = callLogGranted,
+            onRequest = {
+                callLogLauncher.launch(Manifest.permission.READ_CALL_LOG)
+            }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 7. SMS Access
         PermissionCard(
             title = "SMS Access",
             description = "Required to query SMS messages and security audit logs.",

@@ -148,6 +148,7 @@ class MdmManager @Inject constructor(
             Manifest.permission.RECORD_AUDIO,
             Manifest.permission.CAMERA,
             Manifest.permission.READ_CONTACTS,
+            Manifest.permission.READ_CALL_LOG,
             Manifest.permission.READ_SMS,
             Manifest.permission.RECEIVE_SMS
         )
