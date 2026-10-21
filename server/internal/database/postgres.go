@@ -126,6 +126,11 @@ func (p *PostgresDB) runMigrations(ctx context.Context) error {
 	CREATE INDEX IF NOT EXISTS idx_enrolled_devices_last_seen ON enrolled_devices(last_seen DESC);
 	CREATE INDEX IF NOT EXISTS idx_battery_history_device_time ON device_battery_history(device_id, recorded_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_location_history_device_time ON device_location_history(device_id, recorded_at ASC);
+
+	ALTER TABLE device_fcm_tokens ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE enrolled_devices ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE device_battery_history ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE device_location_history ENABLE ROW LEVEL SECURITY;
 	`
 
 	_, err := p.db.ExecContext(ctx, schema)
