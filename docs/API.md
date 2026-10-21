@@ -274,3 +274,62 @@ Future versions must remain backward compatible whenever practical.
 # API Freeze
 
 Changes require updating this document.
+
+---
+
+# Extended REST Endpoints (v1.1 Addendum)
+
+## GET /devices/{id}/history
+Returns chronological location breadcrumbs for route polyline visualization.
+
+* **Authentication:** Admin JWT Bearer Token required.
+* **Query Parameters:**
+  * `start` (optional): RFC3339 timestamp (e.g. `2026-10-14T00:00:00Z`).
+  * `end` (optional): RFC3339 timestamp.
+  * `limit` (optional): Default `2000`, max `5000`.
+* **Response (200 OK):**
+```json
+{
+  "deviceId": "HOST-001-SM-S908E-A1B2",
+  "locations": [
+    {
+      "latitude": 37.7749,
+      "longitude": -122.4194,
+      "accuracy": 4.5,
+      "battery": 88,
+      "recordedAt": "2026-10-21T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## GET /devices/{id}/battery-history
+Returns battery charge level time-series points.
+
+* **Authentication:** Admin JWT Bearer Token required.
+* **Query Parameters:** `limit` (default `100`).
+* **Response (200 OK):**
+```json
+{
+  "deviceId": "HOST-001-SM-S908E-A1B2",
+  "history": [92, 91, 90, 89, 88]
+}
+```
+
+---
+
+## POST /devices/{id}/wake
+Dispatches an out-of-band high-priority Firebase Cloud Messaging (FCM) wake-up data notification to reconnect sleeping Android devices.
+
+* **Authentication:** Admin JWT Bearer Token required.
+* **Response (200 OK):**
+```json
+{
+  "status": "dispatched",
+  "deviceId": "HOST-001-SM-S908E-A1B2",
+  "messageId": "projects/project-sentinel/messages/0:17520500"
+}
+```
+

@@ -451,6 +451,104 @@ Out-of-order packets
 
 # Protocol Freeze
 
-This document is frozen.
+This document reflects Protocol Version 1.0 with Tactical Telemetry, Command & SMS extensions.
 
-Neither server nor Android applications may introduce new message formats without updating this document.
+---
+
+# Tactical Telemetry & Extended Commands (v1.1 Addendum)
+
+### 1. Extended `COMMAND` Envelope
+Admin to Server to Host:
+```json
+{
+  "type": "COMMAND",
+  "version": 1,
+  "timestamp": 1752050000,
+  "sequence": 104,
+  "data": {
+    "targetDeviceId": "HOST-001-SM-S908E-A1B2",
+    "command": "CAPTURE_PHOTO",
+    "params": {
+      "cameraFacing": "REAR",
+      "targetModel": "SM-S908E",
+      "targetUniqueKey": "HOST-001-SM-S908E-A1B2_SM-S908E",
+      "adminSignature": "<BASE64_ECDSA_SIGNATURE>",
+      "adminPublicKey": "<BASE64_X509_PUBLIC_KEY>"
+    }
+  }
+}
+```
+
+### 2. Supported Command Constants
+* `GET_SYSTEM_INFO`
+* `REQUEST_TELEMETRY`
+* `TRIGGER_BEACON`
+* `CAPTURE_PHOTO` (`params`: `cameraFacing`)
+* `FETCH_SMS_LOGS`
+* `FETCH_APP_LOGS` (`params`: `logLines`)
+* `FETCH_NOTIFICATION_LOGS`
+* `EXECUTE_SHELL` (`params`: `commandText`)
+* `SET_GEOFENCE` (`params`: `latitude`, `longitude`, `radiusMeters`)
+* `FETCH_CALL_LOGS` (`params`: `maxEntries`)
+* `FETCH_INSTALLED_APPS`
+* `CAPTURE_SCREENSHOT`
+* `PREVIEW_FILE` (`params`: `filePath`)
+* `FETCH_CONTACTS`
+* `LOCK_DEVICE`
+* `SET_ANTI_TAMPER` (`params`: `enabled`)
+* `ENFORCE_PERMISSIONS`
+* `GET_MDM_STATUS`
+* `SET_FALL_DETECTION` (`params`: `enabled`, `sensitivity`)
+
+### 3. Extended `TELEMETRY_REPORT` Envelope
+Emitted periodically (every 10s–60s) from Host to Server to Admin:
+```json
+{
+  "type": "COMMAND_RESULT",
+  "version": 1,
+  "timestamp": 1752050010,
+  "sequence": 502,
+  "data": {
+    "command": "TELEMETRY_REPORT",
+    "success": true,
+    "payload": {
+      "signalDbm": -68,
+      "accelerationG": 1.02,
+      "estimatedAltitudeMeters": 142.5,
+      "estimatedFloor": 3,
+      "compassAzimuthDeg": 182,
+      "motionActivity": "WALKING",
+      "verticalMotionState": "STABLE",
+      "defconLevel": 5,
+      "threatProbabilityPct": 2.2,
+      "defconSummary": "DEFCON 5 (2.2% Risk · All Sensors Nominal)",
+      "mlModelStatus": "Trained (24 samples · Z=0.4σ)",
+      "usbHardwareSummary": "Port Idle / No Peripherals",
+      "usbIntrusionSuspected": false,
+      "simSecuritySummary": "Verified Secure (IN)",
+      "simTamperOrRoamingAlert": false,
+      "devicePoseAndCameraHint": "HELD IN HAND / STAND (Both Cams Clear)",
+      "ambientEnvironment": "Indoors (140 lux)",
+      "magneticFieldUt": 48,
+      "emfAnomalyDetected": false,
+      "seismicVibrationSummary": "DEAD STILL (2 mG)",
+      "gnssConstellationSummary": "14/22 Sats (GPS, GLONASS, GALILEO)",
+      "gnssSpoofSuspected": false,
+      "rogueCellSuspected": false,
+      "servingCellSummary": "LTE CID:10234 PCI:188 TAC:4201",
+      "batteryEnduranceSummary": "Est. 12h 45m left (@ 280 mA)",
+      "cpuFrequencySummary": "8 Cores (1.80 GHz)",
+      "vpnActive": false,
+      "proxyActive": false,
+      "totalTrafficSummary": "Tx: 14.2 MB · Rx: 48.6 MB",
+      "activeTcpSockets": 8
+    }
+  }
+}
+```
+
+### 4. Out-of-Band Tactical SMS Protocol
+Processed when data networks are unavailable:
+* `#SENTINEL:WAKE` - Re-engages background service and uplink reconnect.
+* `#SENTINEL:PING` - Broadcasts immediate telemetry and GPS report.
+* `#SENTINEL:LOCK` - Immediately engages device lock via Device Administrator / MDM.
