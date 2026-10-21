@@ -122,7 +122,22 @@ class DeviceRepositoryImpl(
     private val recentDedicatedSnapshots = java.util.concurrent.ConcurrentLinkedQueue<DedicatedSnapshot>()
 
     private val prefs: SharedPreferences? by lazy {
-        context?.getSharedPreferences("sentinel_device_cache", Context.MODE_PRIVATE)
+        val ctx = context ?: return@lazy null
+        try {
+            val masterKey = androidx.security.crypto.MasterKey.Builder(ctx)
+                .setKeyScheme(androidx.security.crypto.MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            androidx.security.crypto.EncryptedSharedPreferences.create(
+                ctx,
+                "sentinel_device_cache",
+                masterKey,
+                androidx.security.crypto.EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                androidx.security.crypto.EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "EncryptedSharedPreferences unavailable; falling back to private SharedPreferences (${e.message})")
+            ctx.getSharedPreferences("sentinel_device_cache", Context.MODE_PRIVATE)
+        }
     }
 
     private val inMemoryCallsignMap = java.util.concurrent.ConcurrentHashMap<String, String>()
@@ -159,34 +174,57 @@ class DeviceRepositoryImpl(
             loadCallsignMapping()
         }
 
-        // 1. If explicit non-blank callsign is provided, record and return
-        if (preferredCallsign.isNotBlank()) {
-            inMemoryCallsignMap[uniqueKey] = preferredCallsign
-            saveCallsignMapping()
-            return preferredCallsign
+        // Extract <OEM>-<4HEX> hardware suffix (e.g. "SAMS-9B21" or "VIVO-CFAE") if available
+        val rawCandidate = preferredCallsign.ifBlank {
+            if (uniqueKey.startsWith("HOST-001-") || uniqueKey.startsWith("HOST-")) uniqueKey else ""
+        }
+        val hwSuffix = rawCandidate
+            .replace(Regex("""^HOST-001-"""), "")
+            .replace(Regex("""^HOST\d*-"""), "")
+            .substringBefore("_")
+            .trim()
+            .takeIf { it.isNotBlank() && !it.equals("001", ignoreCase = true) && !it.matches(Regex("""^\d+$""")) }
+
+        // 1. If preferredCallsign is already formatted as HOST001-... and not owned by another uniqueKey, keep it
+        if (preferredCallsign.matches(Regex("""^HOST\d{2,3}(-.*)?$"""))) {
+            val conflictingOwner = inMemoryCallsignMap.entries.find {
+                it.key != uniqueKey && it.value.equals(preferredCallsign, ignoreCase = true)
+            }
+            if (conflictingOwner == null) {
+                val finalCs = if (hwSuffix != null && !preferredCallsign.contains("-")) "${preferredCallsign}-$hwSuffix" else preferredCallsign
+                inMemoryCallsignMap[uniqueKey] = finalCs
+                saveCallsignMapping()
+                return finalCs
+            }
         }
 
-        // 2. Direct match on uniqueKey
-        inMemoryCallsignMap[uniqueKey]?.let { return it }
-
-        // 4. Pre-seed default fleet callsigns for known devices if not yet assigned
-        if (model.contains("CPH2569", ignoreCase = true) && !inMemoryCallsignMap.values.contains("HOST-01")) {
-            val cs = "HOST-01"
-            inMemoryCallsignMap[uniqueKey] = cs
-            saveCallsignMapping()
-            return cs
-        }
-        if (model.contains("I2401", ignoreCase = true) && !inMemoryCallsignMap.values.contains("HOST-02")) {
-            val cs = "HOST-02"
-            inMemoryCallsignMap[uniqueKey] = cs
-            saveCallsignMapping()
-            return cs
+        // 2. Direct match on uniqueKey in registry (upgrade if hwSuffix newly discovered)
+        inMemoryCallsignMap[uniqueKey]?.let { existingCs ->
+            if (hwSuffix != null && !existingCs.endsWith(hwSuffix, ignoreCase = true)) {
+                val seqMatch = Regex("""^HOST-?0*(\d+)""").find(existingCs)?.groupValues?.get(1)?.toIntOrNull()
+                if (seqMatch != null) {
+                    val upgraded = String.format(java.util.Locale.US, "HOST%03d-%s", seqMatch, hwSuffix)
+                    inMemoryCallsignMap[uniqueKey] = upgraded
+                    saveCallsignMapping()
+                    return upgraded
+                }
+            }
+            return existingCs
         }
 
-        // 5. Sequential assignment for any new device (HOST-01, HOST-02, HOST-03...)
+        // 3. Check if another alias key for the exact same hardware suffix already registered a callsign
+        if (hwSuffix != null) {
+            val suffixOwner = inMemoryCallsignMap.entries.find { (_, v) -> v.endsWith("-$hwSuffix", ignoreCase = true) }
+            if (suffixOwner != null) {
+                inMemoryCallsignMap[uniqueKey] = suffixOwner.value
+                saveCallsignMapping()
+                return suffixOwner.value
+            }
+        }
+
+        // 4. Sequential assignment for any new device: HOST001-<OEM>-<4HEX>, HOST002-<OEM>-<4HEX>, ...
         val existingNumbers = inMemoryCallsignMap.values.mapNotNull { cs ->
-            val match = Regex("""HOST-(\d+)""").find(cs)
-            match?.groupValues?.get(1)?.toIntOrNull()
+            Regex("""^HOST-?0*(\d+)""").find(cs)?.groupValues?.get(1)?.toIntOrNull()
         }.toSet()
 
         var nextNum = 1
@@ -194,7 +232,8 @@ class DeviceRepositoryImpl(
             nextNum++
         }
 
-        val newCallsign = String.format("HOST-%02d", nextNum)
+        val seqPrefix = String.format(java.util.Locale.US, "HOST%03d", nextNum)
+        val newCallsign = if (hwSuffix != null) "$seqPrefix-$hwSuffix" else seqPrefix
         inMemoryCallsignMap[uniqueKey] = newCallsign
         saveCallsignMapping()
         return newCallsign
@@ -276,14 +315,21 @@ class DeviceRepositoryImpl(
                 val model = obj.optString("model", "")
                 val deviceId = obj.getString("deviceId")
                 val connectionId = obj.optString("connectionId", "")
+                val hardwareId = obj.optString("hardwareId", "")
+                val deviceName = obj.optString("deviceName", "")
+                val rawCallsign = obj.optString("callsign", "")
+                val resolvedCallsign = rawCallsign.ifBlank {
+                    Regex("""\((HOST\d*-[A-Za-z0-9_-]+)\)""").find(deviceName)?.groupValues?.get(1) ?: ""
+                }
                 val uniqueKey = when {
                     deviceId.isNotBlank() && deviceId != "HOST-001" && (deviceId.startsWith("HOST-") || deviceId.contains("-")) -> deviceId
+                    hardwareId.isNotBlank() && hardwareId != "unknown_hw" -> "${deviceId}_${hardwareId}"
+                    resolvedCallsign.isNotBlank() && resolvedCallsign.contains("-") -> "${deviceId}_${resolvedCallsign}"
                     model.isNotBlank() && model != "Unknown" -> "${deviceId}_${model}"
                     connectionId.isNotBlank() -> "${deviceId}_${connectionId}"
                     else -> deviceId
                 }
-                val rawCallsign = obj.optString("callsign", "")
-                val callsign = getOrCreateCallsign(uniqueKey, model, preferredCallsign = rawCallsign)
+                val callsign = getOrCreateCallsign(uniqueKey, model, preferredCallsign = resolvedCallsign)
 
                 list.add(
                     Device(
@@ -295,12 +341,12 @@ class DeviceRepositoryImpl(
                         heartbeatStatus = obj.optString("heartbeatStatus", "offline"),
                         connectedAt = obj.optString("connectedAt", ""),
                         lastHeartbeat = obj.optString("lastHeartbeat", ""),
-                        deviceName = obj.optString("deviceName", ""),
+                        deviceName = deviceName,
                         appVersion = obj.optString("appVersion", ""),
                         model = model,
                         latestLocation = loc,
                         callsign = callsign,
-                        hardwareId = obj.optString("hardwareId", "")
+                        hardwareId = hardwareId
                     )
                 )
             }
@@ -472,11 +518,9 @@ class DeviceRepositoryImpl(
 
                 val safeServerLoc = if (isEchoOfAnotherDevice) null else serverLoc
                 val resolvedLocation = reconcileLocation(dev.uniqueKey, existing?.latestLocation, safeServerLoc)
-                val hwCallsign = Regex("""\((HOST-[A-Za-z0-9_-]+)\)""").find(dev.deviceName)?.groupValues?.get(1) ?: ""
-                val callsign = hwCallsign.ifBlank {
-                    existing?.callsign?.ifBlank { null }
-                        ?: getOrCreateCallsign(dev.uniqueKey, dev.model)
-                }
+                val hwCallsign = Regex("""\((HOST\d*-[A-Za-z0-9_-]+)\)""").find(dev.deviceName)?.groupValues?.get(1) ?: ""
+                val callsign = existing?.callsign?.takeIf { it.isNotBlank() && it.matches(Regex("""^HOST\d{2,3}(-.*)?$""")) }
+                    ?: getOrCreateCallsign(dev.uniqueKey, dev.model, preferredCallsign = hwCallsign)
 
                 val isStaleOrOffline = dev.heartbeatStatus.equals("stale", ignoreCase = true) ||
                         dev.heartbeatStatus.equals("offline", ignoreCase = true)
@@ -603,17 +647,28 @@ class DeviceRepositoryImpl(
         val currentRev = getLocationRevision(targetKey)
         val liveArrivedWhileInFlight = requestStartRevision != null && currentRev > requestStartRevision
 
+        val serverSample = normalizedSampleIso(serverLoc.recordedAt)
+        val existingSample = normalizedSampleIso(existingLoc.recordedAt)
+
+        // Clock-skew guard: if existingSample is more than 5 minutes in the future compared to receiptClock,
+        // it indicates device clock skew on the old sample; let fresh serverLoc win.
+        val isExistingSkewedFuture = if (existingSample != null) {
+            runCatching {
+                Instant.parse(existingSample).isAfter(receiptClock.instant().plusSeconds(300))
+            }.getOrDefault(false)
+        } else false
+
+        if (isExistingSkewedFuture) {
+            return serverLoc
+        }
+
         if (liveArrivedWhileInFlight) {
-            val serverSample = normalizedSampleIso(serverLoc.recordedAt)
-            val existingSample = normalizedSampleIso(existingLoc.recordedAt)
             if (serverSample != null && existingSample != null && serverSample > existingSample) {
                 return serverLoc
             }
             return existingLoc
         }
 
-        val serverSample = normalizedSampleIso(serverLoc.recordedAt)
-        val existingSample = normalizedSampleIso(existingLoc.recordedAt)
         return when {
             serverSample != null && existingSample != null -> {
                 if (serverSample >= existingSample) serverLoc else existingLoc
@@ -774,9 +829,70 @@ class DeviceRepositoryImpl(
         }
     }
 
+    override suspend fun getRouteHistory(
+        deviceId: String,
+        start: String?,
+        end: String?
+    ): Result<List<com.sentinel.admin.domain.model.DeviceLocation>> {
+        return try {
+            val token = authRepository.getToken()
+                ?: return Result.failure(IllegalStateException("Not authenticated"))
+
+            val serverDeviceId = _devices.value[deviceId]?.deviceId ?: deviceId
+            val response = deviceApi.getRouteHistory("Bearer $token", serverDeviceId, start, end)
+            val domainPoints = response.points.map { dto ->
+                com.sentinel.admin.domain.model.DeviceLocation(
+                    deviceId = dto.deviceId.ifBlank { deviceId },
+                    latitude = dto.latitude,
+                    longitude = dto.longitude,
+                    accuracy = dto.accuracy,
+                    battery = dto.battery,
+                    network = dto.network,
+                    recordedAt = dto.recordedAt,
+                    hasReportedFix = dto.latitude != 0.0 || dto.longitude != 0.0
+                )
+            }
+            Result.success(domainPoints)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching route history for $deviceId: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun getBatteryHistory(deviceId: String): Result<List<Int>> {
+        return try {
+            val token = authRepository.getToken()
+                ?: return Result.failure(IllegalStateException("Not authenticated"))
+
+            val serverDeviceId = _devices.value[deviceId]?.deviceId ?: deviceId
+            val response = deviceApi.getBatteryHistory("Bearer $token", serverDeviceId)
+            val batteryPoints = response.history.map { it.batteryPercent }.reversed()
+            Result.success(batteryPoints)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error fetching battery history for $deviceId: ${e.message}", e)
+            Result.failure(e)
+        }
+    }
+
     // ============================================================
     // WebSocket event handling
     // ============================================================
+
+    private fun resolveCanonicalKey(
+        deviceId: String,
+        model: String? = null,
+        deviceName: String? = null,
+        connectionId: String? = null
+    ): String {
+        if (deviceId.isNotBlank() && deviceId != "HOST-001" && (deviceId.startsWith("HOST-") || deviceId.contains("-"))) {
+            return deviceId
+        }
+        val hwCallsign = Regex("""\((HOST\d*-[A-Za-z0-9_-]+)\)""").find(deviceName ?: "")?.groupValues?.get(1) ?: ""
+        if (hwCallsign.isNotBlank()) return "${deviceId}_$hwCallsign"
+        if (!model.isNullOrBlank() && model != "Unknown") return "${deviceId}_$model"
+        if (!connectionId.isNullOrBlank()) return "${deviceId}_$connectionId"
+        return deviceId
+    }
 
     private fun handleDeviceUpdate(rawJson: String) {
         _eventStatistics.update { it.copy(received = it.received + 1) }
@@ -799,7 +915,7 @@ class DeviceRepositoryImpl(
 
         // Sequence ordering — reject stale/duplicate
         if (deviceId.isNotBlank()) {
-            val sequenceKey = message.data.model?.takeIf { it.isNotBlank() }?.let { "${deviceId}_$it" } ?: deviceId
+            val sequenceKey = resolveCanonicalKey(deviceId, message.data.model, message.data.deviceName)
             val lastSeq = lastSequence[sequenceKey] ?: -1
             if (sequence > 0 && lastSeq >= 0) {
                 when {
@@ -839,19 +955,12 @@ class DeviceRepositoryImpl(
         when (event) {
             is DeviceUpdateEvent.DeviceConnected -> {
                 _devices.update { current ->
-                    val hwCallsign = Regex("""\((HOST-[A-Za-z0-9_-]+)\)""").find(event.deviceName ?: "")?.groupValues?.get(1) ?: ""
-                    val key = if (!event.model.isNullOrBlank()) {
-                        "${event.deviceId}_${event.model}"
-                    } else if (hwCallsign.isNotBlank()) {
-                        "${event.deviceId}_$hwCallsign"
-                    } else {
-                        current.values.find { it.deviceId == event.deviceId }?.uniqueKey ?: event.deviceId
-                    }
+                    val hwCallsign = Regex("""\((HOST\d*-[A-Za-z0-9_-]+)\)""").find(event.deviceName ?: "")?.groupValues?.get(1) ?: ""
+                    val key = resolveCanonicalKey(event.deviceId, event.model, event.deviceName)
                     val existing = current[key] ?: (if (hwCallsign.isNotBlank()) current["${event.deviceId}_$hwCallsign"] else null) ?: current[event.deviceId]?.takeIf { event.model.isNullOrBlank() || it.model == event.model }
                     val resolvedModel = event.model?.takeIf { it.isNotBlank() } ?: existing?.model ?: ""
-                    val callsign = hwCallsign.ifBlank {
-                        existing?.callsign?.ifBlank { null } ?: getOrCreateCallsign(key, resolvedModel)
-                    }
+                    val callsign = existing?.callsign?.takeIf { it.isNotBlank() && it.matches(Regex("""^HOST\d{2,3}(-.*)?$""")) }
+                        ?: getOrCreateCallsign(key, resolvedModel, preferredCallsign = hwCallsign)
                     val patched = existing?.copy(
                         heartbeatStatus = "online",
                         registered = true,
@@ -866,6 +975,10 @@ class DeviceRepositoryImpl(
                     updated[patched.uniqueKey] = patched
                     if (key != patched.uniqueKey) updated[key] = patched
                     if (hwCallsign.isNotBlank()) updated["${patched.deviceId}_$hwCallsign"] = patched
+                    val distinctSameModel = updated.values.filter { it.deviceId == patched.deviceId && it.model.equals(patched.model, ignoreCase = true) }.distinctBy { it.uniqueKey }
+                    if (patched.model.isNotBlank() && distinctSameModel.size <= 1) {
+                        updated["${patched.deviceId}_${patched.model}"] = patched
+                    }
                     if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
                     val distinct = updated.values.filter { it.deviceId == patched.deviceId }.distinctBy { it.uniqueKey }
                     if (distinct.size <= 1 || updated[patched.deviceId]?.uniqueKey == patched.uniqueKey) {
@@ -878,38 +991,35 @@ class DeviceRepositoryImpl(
 
             is DeviceUpdateEvent.DeviceDisconnected -> {
                 _devices.update { current ->
+                    val distinctDevices = current.values.distinctBy { it.uniqueKey }
                     val eventModel = event.model
-                    if (!eventModel.isNullOrBlank()) {
-                        val matchingTarget = current.values.find {
-                            it.deviceId == event.deviceId && it.model.equals(eventModel, ignoreCase = true)
-                        } ?: current.values.find { it.uniqueKey == "${event.deviceId}_$eventModel" }
 
-                        if (matchingTarget != null) {
-                            val patched = matchingTarget.copy(heartbeatStatus = "offline")
-                            val updated = current.toMutableMap()
-                            updated[patched.uniqueKey] = patched
-                            if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
-                            val distinct = updated.values.filter { it.deviceId == patched.deviceId }.distinctBy { it.uniqueKey }
-                            if (distinct.size <= 1 || updated[patched.deviceId]?.uniqueKey == patched.uniqueKey) {
-                                updated[patched.deviceId] = patched
-                            }
-                            saveDeviceCache(updated)
-                            return@update updated
-                        }
+                    val target = if (event.deviceId != "HOST-001") {
+                        current[event.deviceId] ?: distinctDevices.find { it.deviceId == event.deviceId }
+                    } else if (!eventModel.isNullOrBlank()) {
+                        val modelMatches = distinctDevices.filter { it.deviceId == event.deviceId && it.model.equals(eventModel, ignoreCase = true) }
+                        if (modelMatches.size == 1) modelMatches.first() else null
+                    } else {
+                        val idMatches = distinctDevices.filter { it.deviceId == event.deviceId }
+                        if (idMatches.size == 1) idMatches.first() else null
                     }
 
-                    val distinctDevices = current.values.filter { it.deviceId == event.deviceId }.distinctBy { it.uniqueKey }
-                    if (distinctDevices.size <= 1) {
-                        val existing = current[event.deviceId] ?: current.values.firstOrNull { it.deviceId == event.deviceId } ?: return@update current
-                        val patched = existing.copy(heartbeatStatus = "offline")
+                    if (target != null) {
+                        val patched = target.copy(heartbeatStatus = "offline")
                         val updated = current.toMutableMap()
                         updated[patched.uniqueKey] = patched
+                        val distinctSameModel = updated.values.filter { it.deviceId == patched.deviceId && it.model.equals(patched.model, ignoreCase = true) }.distinctBy { it.uniqueKey }
+                        if (patched.model.isNotBlank() && distinctSameModel.size <= 1) {
+                            updated["${patched.deviceId}_${patched.model}"] = patched
+                        }
                         if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
-                        updated[event.deviceId] = patched
+                        val distinct = updated.values.filter { it.deviceId == patched.deviceId }.distinctBy { it.uniqueKey }
+                        if (distinct.size <= 1 || updated[patched.deviceId]?.uniqueKey == patched.uniqueKey) {
+                            updated[patched.deviceId] = patched
+                        }
                         saveDeviceCache(updated)
                         updated
                     } else {
-                        // When multiple devices share deviceId and model is absent, do not mark both offline prematurely.
                         current
                     }
                 }
@@ -917,56 +1027,45 @@ class DeviceRepositoryImpl(
 
             is DeviceUpdateEvent.HeartbeatReceived -> {
                 _devices.update { current ->
+                    val distinctDevices = current.values.distinctBy { it.uniqueKey }
                     val eventModel = event.model
-                    if (!eventModel.isNullOrBlank()) {
-                        val matchingTarget = current.values.find {
-                            it.deviceId == event.deviceId && it.model.equals(eventModel, ignoreCase = true)
-                        } ?: current.values.find { it.uniqueKey == "${event.deviceId}_$eventModel" }
 
-                        if (matchingTarget != null) {
-                            val patched = matchingTarget.copy(
-                                heartbeatStatus = "online",
-                                lastHeartbeat = event.timestamp ?: matchingTarget.lastHeartbeat
-                            )
-                            val updated = current.toMutableMap()
-                            updated[patched.uniqueKey] = patched
-                            if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
-                            val distinct = updated.values.filter { it.deviceId == patched.deviceId }.distinctBy { it.uniqueKey }
-                            if (distinct.size <= 1 || updated[patched.deviceId]?.uniqueKey == patched.uniqueKey) {
-                                updated[patched.deviceId] = patched
-                            }
-                            saveDeviceCache(updated)
-                            return@update updated
-                        }
+                    val target = if (event.deviceId != "HOST-001") {
+                        current[event.deviceId] ?: distinctDevices.find { it.deviceId == event.deviceId }
+                    } else if (!eventModel.isNullOrBlank()) {
+                        val modelMatches = distinctDevices.filter { it.deviceId == event.deviceId && it.model.equals(eventModel, ignoreCase = true) }
+                        if (modelMatches.size == 1) modelMatches.first() else null
+                    } else {
+                        val idMatches = distinctDevices.filter { it.deviceId == event.deviceId }
+                        if (idMatches.size == 1) idMatches.first() else null
                     }
 
-                    val distinctDevices = current.values.filter { it.deviceId == event.deviceId }.distinctBy { it.uniqueKey }
-                    if (distinctDevices.size <= 1) {
-                        val existing = current[event.deviceId] ?: current.values.firstOrNull { it.deviceId == event.deviceId } ?: return@update current
-                        val patched = existing.copy(
+                    if (target != null) {
+                        val patched = target.copy(
                             heartbeatStatus = "online",
-                            lastHeartbeat = event.timestamp ?: existing.lastHeartbeat
+                            lastHeartbeat = event.timestamp ?: target.lastHeartbeat
                         )
                         val updated = current.toMutableMap()
                         updated[patched.uniqueKey] = patched
+                        val distinctSameModel = updated.values.filter { it.deviceId == patched.deviceId && it.model.equals(patched.model, ignoreCase = true) }.distinctBy { it.uniqueKey }
+                        if (patched.model.isNotBlank() && distinctSameModel.size <= 1) {
+                            updated["${patched.deviceId}_${patched.model}"] = patched
+                        }
                         if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
-                        updated[event.deviceId] = patched
+                        val distinct = updated.values.filter { it.deviceId == patched.deviceId }.distinctBy { it.uniqueKey }
+                        if (distinct.size <= 1 || updated[patched.deviceId]?.uniqueKey == patched.uniqueKey) {
+                            updated[patched.deviceId] = patched
+                        }
                         saveDeviceCache(updated)
                         updated
                     } else {
-                        // Multiple distinct devices share this ID and model was omitted:
-                        // Only refresh the timestamp of the device that is already online, never reviving offline units!
-                        val updated = current.toMutableMap()
-                        var modified = false
-                        for ((k, d) in current) {
-                            if (d.deviceId == event.deviceId && d.heartbeatStatus == "online") {
-                                updated[k] = d.copy(
-                                    lastHeartbeat = event.timestamp ?: d.lastHeartbeat
-                                )
-                                modified = true
-                            }
-                        }
-                        if (modified) {
+                        val onlineDevices = current.values.filter { it.deviceId == event.deviceId && it.heartbeatStatus == "online" }
+                        if (onlineDevices.size == 1) {
+                            val onlineTarget = onlineDevices.first()
+                            val patched = onlineTarget.copy(lastHeartbeat = event.timestamp ?: onlineTarget.lastHeartbeat)
+                            val updated = current.toMutableMap()
+                            updated[patched.uniqueKey] = patched
+                            if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
                             saveDeviceCache(updated)
                             updated
                         } else {
@@ -1019,8 +1118,11 @@ class DeviceRepositoryImpl(
                         updated
                     } else {
                         val distinctDevices = current.values.filter { it.deviceId == event.deviceId }.distinctBy { it.uniqueKey }
-                        val targetKey: String? = if (!event.model.isNullOrBlank()) {
-                            distinctDevices.find { it.model.equals(event.model, ignoreCase = true) }?.uniqueKey
+                        val targetKey: String? = if (event.deviceId != "HOST-001") {
+                            (current[event.deviceId] ?: distinctDevices.find { it.deviceId == event.deviceId })?.uniqueKey ?: event.deviceId
+                        } else if (!event.model.isNullOrBlank()) {
+                            val modelMatches = distinctDevices.filter { it.model.equals(event.model, ignoreCase = true) }
+                            if (modelMatches.size == 1) modelMatches.first().uniqueKey else null
                         } else if (distinctDevices.size == 1) {
                             distinctDevices.first().uniqueKey
                         } else {
@@ -1074,6 +1176,10 @@ class DeviceRepositoryImpl(
                         val patched = existing.copy(latestLocation = location)
                         updated[targetKey] = patched
                         if (patched.uniqueKey != targetKey) updated[patched.uniqueKey] = patched
+                        val distinctSameModel = updated.values.filter { it.deviceId == patched.deviceId && it.model.equals(patched.model, ignoreCase = true) }.distinctBy { it.uniqueKey }
+                        if (patched.model.isNotBlank() && distinctSameModel.size <= 1) {
+                            updated["${patched.deviceId}_${patched.model}"] = patched
+                        }
                         if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
                         val distinct = updated.values.filter { it.deviceId == patched.deviceId }.distinctBy { it.uniqueKey }
                         if (distinct.size <= 1 || updated[patched.deviceId]?.uniqueKey == patched.uniqueKey) {
@@ -1099,8 +1205,11 @@ class DeviceRepositoryImpl(
                         updated
                     } else {
                         val distinctDevices = current.values.filter { it.deviceId == event.deviceId }.distinctBy { it.uniqueKey }
-                        val targetKey: String? = if (!event.model.isNullOrBlank()) {
-                            distinctDevices.find { it.model.equals(event.model, ignoreCase = true) }?.uniqueKey
+                        val targetKey: String? = if (event.deviceId != "HOST-001") {
+                            (current[event.deviceId] ?: distinctDevices.find { it.deviceId == event.deviceId })?.uniqueKey ?: event.deviceId
+                        } else if (!event.model.isNullOrBlank()) {
+                            val modelMatches = distinctDevices.filter { it.model.equals(event.model, ignoreCase = true) }
+                            if (modelMatches.size == 1) modelMatches.first().uniqueKey else null
                         } else if (distinctDevices.size == 1) {
                             distinctDevices.first().uniqueKey
                         } else {
@@ -1137,6 +1246,10 @@ class DeviceRepositoryImpl(
                         val patched = existing.copy(latestLocation = location)
                         updated[targetKey] = patched
                         if (patched.uniqueKey != targetKey) updated[patched.uniqueKey] = patched
+                        val distinctSameModel = updated.values.filter { it.deviceId == patched.deviceId && it.model.equals(patched.model, ignoreCase = true) }.distinctBy { it.uniqueKey }
+                        if (patched.model.isNotBlank() && distinctSameModel.size <= 1) {
+                            updated["${patched.deviceId}_${patched.model}"] = patched
+                        }
                         if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
                         val distinct = updated.values.filter { it.deviceId == patched.deviceId }.distinctBy { it.uniqueKey }
                         if (distinct.size <= 1 || updated[patched.deviceId]?.uniqueKey == patched.uniqueKey) {
@@ -1162,8 +1275,11 @@ class DeviceRepositoryImpl(
                         updated
                     } else {
                         val distinctDevices = current.values.filter { it.deviceId == event.deviceId }.distinctBy { it.uniqueKey }
-                        val targetKey: String? = if (!event.model.isNullOrBlank()) {
-                            distinctDevices.find { it.model.equals(event.model, ignoreCase = true) }?.uniqueKey
+                        val targetKey: String? = if (event.deviceId != "HOST-001") {
+                            (current[event.deviceId] ?: distinctDevices.find { it.deviceId == event.deviceId })?.uniqueKey ?: event.deviceId
+                        } else if (!event.model.isNullOrBlank()) {
+                            val modelMatches = distinctDevices.filter { it.model.equals(event.model, ignoreCase = true) }
+                            if (modelMatches.size == 1) modelMatches.first().uniqueKey else null
                         } else if (distinctDevices.size == 1) {
                             distinctDevices.first().uniqueKey
                         } else {
@@ -1194,6 +1310,10 @@ class DeviceRepositoryImpl(
                         val patched = existing.copy(latestLocation = location)
                         updated[targetKey] = patched
                         if (patched.uniqueKey != targetKey) updated[patched.uniqueKey] = patched
+                        val distinctSameModel = updated.values.filter { it.deviceId == patched.deviceId && it.model.equals(patched.model, ignoreCase = true) }.distinctBy { it.uniqueKey }
+                        if (patched.model.isNotBlank() && distinctSameModel.size <= 1) {
+                            updated["${patched.deviceId}_${patched.model}"] = patched
+                        }
                         if (patched.connectionId.isNotBlank()) updated[patched.connectionId] = patched
                         val distinct = updated.values.filter { it.deviceId == patched.deviceId }.distinctBy { it.uniqueKey }
                         if (distinct.size <= 1 || updated[patched.deviceId]?.uniqueKey == patched.uniqueKey) {
@@ -1338,8 +1458,16 @@ class DeviceRepositoryImpl(
             // Exact permanent identity wins even when another phone of the same model is online.
             val exact = candidates.filter { it.deviceId == deviceId && deviceId != "HOST-001" }
             val keyed = candidates.filter { uniqueKey != null && it.uniqueKey == uniqueKey }
+            val cleanCallsignSuffix = callsign?.replace(Regex("""^HOST-001-"""), "")?.replace(Regex("""^HOST\d*-"""), "") ?: ""
             val hardware = candidates.filter {
-                (!callsign.isNullOrBlank() && (it.resolvedCallsign == callsign || it.callsign == callsign)) ||
+                (!callsign.isNullOrBlank() && (
+                    it.resolvedCallsign.equals(callsign, ignoreCase = true) ||
+                    it.callsign.equals(callsign, ignoreCase = true) ||
+                    (cleanCallsignSuffix.isNotBlank() && (
+                        it.resolvedCallsign.endsWith("-$cleanCallsignSuffix", ignoreCase = true) ||
+                        it.callsign.endsWith("-$cleanCallsignSuffix", ignoreCase = true)
+                    ))
+                )) ||
                 (!hardwareId.isNullOrBlank() && (it.hardwareId == hardwareId ||
                     it.deviceId == "HOST-001-$hardwareId" || it.deviceId == "HOST-$hardwareId"))
             }
@@ -1467,6 +1595,13 @@ class DeviceRepositoryImpl(
             if (patched.uniqueKey != targetKey) {
                 updated[patched.uniqueKey] = patched
             }
+            if (uniqueKey != null) {
+                updated[uniqueKey] = patched
+            }
+            val distinctSameModel = updated.values.filter { it.deviceId == patched.deviceId && it.model.equals(patched.model, ignoreCase = true) }.distinctBy { it.uniqueKey }
+            if (patched.model.isNotBlank() && distinctSameModel.size <= 1) {
+                updated["${patched.deviceId}_${patched.model}"] = patched
+            }
             if (patched.connectionId.isNotBlank()) {
                 updated[patched.connectionId] = patched
             }
@@ -1485,11 +1620,9 @@ class DeviceRepositoryImpl(
      */
     private fun createMinimalDevice(event: DeviceUpdateEvent.DeviceConnected): Device {
         val model = event.model ?: ""
-        val hwCallsign = Regex("""\((HOST-[A-Za-z0-9_-]+)\)""").find(event.deviceName ?: "")?.groupValues?.get(1) ?: ""
-        val uniqueKey = if (hwCallsign.isNotBlank()) "${event.deviceId}_$hwCallsign"
-            else if (model.isNotBlank()) "${event.deviceId}_$model"
-            else event.deviceId
-        val callsign = hwCallsign.ifBlank { getOrCreateCallsign(uniqueKey, model) }
+        val hwCallsign = Regex("""\((HOST\d*-[A-Za-z0-9_-]+)\)""").find(event.deviceName ?: "")?.groupValues?.get(1) ?: ""
+        val uniqueKey = resolveCanonicalKey(event.deviceId, model, event.deviceName)
+        val callsign = getOrCreateCallsign(uniqueKey, model, preferredCallsign = hwCallsign)
         return Device(
             deviceId = event.deviceId,
             connectionId = "",

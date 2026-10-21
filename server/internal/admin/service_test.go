@@ -223,6 +223,20 @@ func (f *fakeEnrolledSource) GetBatteryHistory(ctx context.Context, deviceID str
 	}, nil
 }
 
+func (f *fakeEnrolledSource) GetLocationHistory(ctx context.Context, deviceID string, from, to time.Time, limit int) ([]repository.Location, error) {
+	if deviceID == "HOST-001-VIVO-CFAE" {
+		return []repository.Location{
+			{
+				DeviceID:   deviceID,
+				Latitude:   37.7749,
+				Longitude:  -122.4194,
+				RecordedAt: time.Now(),
+			},
+		}, nil
+	}
+	return []repository.Location{}, nil
+}
+
 func TestServiceIncludesOfflineEnrolledDevices(t *testing.T) {
 	service := NewService(nil, nil, nil)
 	enrolled := &fakeEnrolledSource{
@@ -269,6 +283,20 @@ func TestServiceGetBatteryHistory(t *testing.T) {
 	}
 	if len(history) != 1 || history[0].BatteryPercent != 88 {
 		t.Fatalf("unexpected battery history: %+v", history)
+	}
+}
+
+func TestServiceGetLocationHistorySequentialCallsignAlias(t *testing.T) {
+	service := NewService(nil, nil, nil)
+	enrolled := &fakeEnrolledSource{}
+	service.SetEnrolledDeviceSource(enrolled)
+
+	pts, err := service.GetLocationHistory(context.Background(), "HOST001-VIVO-CFAE", time.Time{}, time.Time{}, 10)
+	if err != nil {
+		t.Fatalf("GetLocationHistory failed: %v", err)
+	}
+	if len(pts) != 1 || pts[0].Latitude != 37.7749 {
+		t.Fatalf("expected resolved points from HOST-001-VIVO-CFAE, got: %+v", pts)
 	}
 }
 

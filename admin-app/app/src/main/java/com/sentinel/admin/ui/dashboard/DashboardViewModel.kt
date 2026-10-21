@@ -54,7 +54,7 @@ class DashboardViewModel @Inject constructor(
                 if (deviceMap.isNotEmpty()) {
                     val deduplicated = deviceMap.values
                         .sortedWith(compareByDescending<Device> { it.heartbeatStatus == "online" }.thenByDescending { it.lastHeartbeat })
-                        .distinctBy { it.resolvedCallsign.ifBlank { it.uniqueKey } }
+                        .distinctBy { it.uniqueKey }
                     _uiState.update {
                         it.copy(devices = deduplicated)
                     }
@@ -96,7 +96,7 @@ class DashboardViewModel @Inject constructor(
                 .onSuccess { devices ->
                     val deduplicated = devices
                         .sortedWith(compareByDescending<Device> { it.heartbeatStatus == "online" }.thenByDescending { it.lastHeartbeat })
-                        .distinctBy { it.resolvedCallsign.ifBlank { it.uniqueKey } }
+                        .distinctBy { it.uniqueKey }
                     _uiState.update {
                         it.copy(
                             devices = deduplicated,
@@ -142,7 +142,7 @@ class DashboardViewModel @Inject constructor(
                 currentCoroutineContext().ensureActive()
                 val deduplicated = devices
                     .sortedWith(compareByDescending<Device> { it.heartbeatStatus == "online" }.thenByDescending { it.lastHeartbeat })
-                    .distinctBy { it.resolvedCallsign.ifBlank { it.uniqueKey } }
+                    .distinctBy { it.uniqueKey }
                 _uiState.update { current ->
                     if (current.refreshOperation is RefreshOperation.Running && current.refreshOperation.attemptId == attemptId) {
                         current.copy(

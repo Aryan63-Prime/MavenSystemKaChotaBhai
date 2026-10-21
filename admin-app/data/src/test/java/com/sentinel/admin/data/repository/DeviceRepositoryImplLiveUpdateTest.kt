@@ -51,6 +51,18 @@ class DeviceRepositoryImplLiveUpdateTest {
             throw NotImplementedError("not used in live update tests")
         override suspend fun wakeDevice(authorization: String, deviceId: String): com.sentinel.admin.data.remote.api.WakeResponseDto =
             com.sentinel.admin.data.remote.api.WakeResponseDto(success = true, deviceId = deviceId, messageId = "test-msg-id")
+        override suspend fun getRouteHistory(
+            authorization: String,
+            deviceId: String,
+            start: String?,
+            end: String?
+        ): com.sentinel.admin.data.remote.api.RouteHistoryResponse =
+            com.sentinel.admin.data.remote.api.RouteHistoryResponse(deviceId = deviceId, points = emptyList())
+        override suspend fun getBatteryHistory(
+            authorization: String,
+            deviceId: String
+        ): com.sentinel.admin.data.remote.api.BatteryHistoryResponse =
+            com.sentinel.admin.data.remote.api.BatteryHistoryResponse(deviceId = deviceId, history = emptyList())
     }
 
     @Before
@@ -858,5 +870,108 @@ class DeviceRepositoryImplLiveUpdateTest {
         assertNotNull(loc2)
         assertEquals("2026-10-12T10:00:25Z", loc2?.recordedAt)
         assertEquals("2026-10-12T10:00:30Z", loc2?.receivedAt)
+    }
+
+    @Test
+    fun `two phones of same model with distinct hardware IDs remain separate and update locations independently`() = scope.runTest {
+        // Device 1 connects
+        emitConnected(
+            deviceId = "HOST-001-VIVO-CFAE",
+            deviceName = "Vivo Y200 (HOST-VIVO-CFAE)",
+            model = "I2401",
+            sequence = 1
+        )
+        // Device 2 connects (same model I2401, different hardware ID)
+        emitConnected(
+            deviceId = "HOST-001-VIVO-4109",
+            deviceName = "Vivo Y200 (HOST-VIVO-4109)",
+            model = "I2401",
+            sequence = 2
+        )
+        advanceUntilIdle()
+
+        val devices = repo.devices.value.values.distinctBy { it.uniqueKey }
+        assertEquals(2, devices.size)
+
+        val dev1 = repo.devices.value["HOST-001-VIVO-CFAE"]
+        assertNotNull(dev1)
+        assertEquals("HOST001-VIVO-CFAE", dev1?.callsign)
+        assertEquals("HOST001-VIVO-CFAE", dev1?.resolvedCallsign)
+
+        val dev2 = repo.devices.value["HOST-001-VIVO-4109"]
+        assertNotNull(dev2)
+        assertEquals("HOST002-VIVO-4109", dev2?.callsign)
+        assertEquals("HOST002-VIVO-4109", dev2?.resolvedCallsign)
+
+        // Device 1 reports location (lat: 28.50, lng: 77.20, bat: 85)
+        eventsFlow.tryEmit(ConnectionEvent.CommandResultReceived("""
+            {
+                "type": "COMMAND_RESULT",
+                "version": 1,
+                "timestamp": 12345,
+                "sequence": 3,
+                "data": {
+                    "command": "TELEMETRY_REPORT",
+                    "success": true,
+                    "payload": {
+                        "deviceId": "HOST-001-VIVO-CFAE",
+                        "model": "I2401",
+                        "callsign": "HOST-VIVO-CFAE",
+                        "battery": 85,
+                        "network": "5G",
+                        "latitude": 28.5000,
+                        "longitude": 77.2000,
+                        "accuracy": 5.0,
+                        "timestamp": "2026-10-21T01:00:00Z"
+                    }
+                }
+            }
+        """.trimIndent()))
+
+        // Device 2 reports location (lat: 19.07, lng: 72.87, bat: 60)
+        eventsFlow.tryEmit(ConnectionEvent.CommandResultReceived("""
+            {
+                "type": "COMMAND_RESULT",
+                "version": 1,
+                "timestamp": 12346,
+                "sequence": 4,
+                "data": {
+                    "command": "TELEMETRY_REPORT",
+                    "success": true,
+                    "payload": {
+                        "deviceId": "HOST-001-VIVO-4109",
+                        "model": "I2401",
+                        "callsign": "HOST-VIVO-4109",
+                        "battery": 60,
+                        "network": "WiFi",
+                        "latitude": 19.0700,
+                        "longitude": 72.8700,
+                        "accuracy": 3.0,
+                        "timestamp": "2026-10-21T01:00:05Z"
+                    }
+                }
+            }
+        """.trimIndent()))
+        advanceUntilIdle()
+
+        // Verify Device 1's location
+        val updatedDev1 = repo.devices.value["HOST-001-VIVO-CFAE"]
+        assertNotNull(updatedDev1?.latestLocation)
+        assertEquals(28.5000, updatedDev1!!.latestLocation!!.latitude, 0.0001)
+        assertEquals(77.2000, updatedDev1.latestLocation!!.longitude, 0.0001)
+        assertEquals(85, updatedDev1.latestLocation!!.battery)
+        assertEquals("5G", updatedDev1.latestLocation!!.network)
+
+        // Verify Device 2's location
+        val updatedDev2 = repo.devices.value["HOST-001-VIVO-4109"]
+        assertNotNull(updatedDev2?.latestLocation)
+        assertEquals(19.0700, updatedDev2!!.latestLocation!!.latitude, 0.0001)
+        assertEquals(72.8700, updatedDev2.latestLocation!!.longitude, 0.0001)
+        assertEquals(60, updatedDev2.latestLocation!!.battery)
+        assertEquals("WiFi", updatedDev2.latestLocation!!.network)
+
+        // Verify both still remain distinct in the device list
+        val finalDevices = repo.devices.value.values.distinctBy { it.uniqueKey }
+        assertEquals(2, finalDevices.size)
     }
 }

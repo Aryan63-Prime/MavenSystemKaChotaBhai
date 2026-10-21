@@ -59,6 +59,24 @@ func (m *Manager) Snapshots() []SessionSnapshot {
 	return snapshots
 }
 
+// HasOtherActiveSession reports whether another active session exists for deviceID.
+func (m *Manager) HasOtherActiveSession(deviceID string, excludeConnectionID string) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	target := strings.TrimSpace(deviceID)
+	if target == "" || target == "HOST-001" {
+		return false
+	}
+	for _, session := range m.sessions {
+		snap := session.Snapshot()
+		if snap.ConnectionID != excludeConnectionID && snap.Authenticated && snap.Registered && snap.DeviceID == target {
+			return true
+		}
+	}
+	return false
+}
+
 // SnapshotByDeviceID resolves exact identities before explicit legacy aliases.
 // An alias must identify one device; shared tokens and model names are not identities.
 func (m *Manager) SnapshotByDeviceID(deviceID string) (SessionSnapshot, bool) {
@@ -74,7 +92,7 @@ func (m *Manager) SnapshotByDeviceID(deviceID string) (SessionSnapshot, bool) {
 		if !snapshot.Authenticated || !snapshot.Registered {
 			continue
 		}
-		if snapshot.ConnectionID == target {
+		if snapshot.ConnectionID == target || snapshot.DeviceID+"_"+snapshot.ConnectionID == target {
 			return snapshot, true
 		}
 		if snapshot.DeviceID == target || snapshot.DeviceID+"_"+snapshot.Model == target {

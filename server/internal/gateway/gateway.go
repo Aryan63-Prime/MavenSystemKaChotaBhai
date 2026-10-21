@@ -160,18 +160,21 @@ func (g *Gateway) websocket(w http.ResponseWriter, r *http.Request) {
 func (g *Gateway) readLoop(client *Client) {
 
 	defer func() {
-		// Broadcast disconnect before removing session
+		// Remove connection from manager first so HasOtherActiveSession excludes this closing session
+		g.manager.Remove(client.ConnectionID)
+
+		// Broadcast disconnect only if no other active session exists for this device (e.g. Wi-Fi to 5G handoff)
 		if client.Session != nil && client.Session.IsRegistered() {
 			disconnID := client.Session.DeviceID()
 			if disconnID == "" {
 				disconnID = client.Session.AuthenticatedDeviceID()
 			}
-			g.dispatcher.BroadcastDisconnect(disconnID, client.Session.Model())
+			if !g.manager.HasOtherActiveSession(disconnID, client.ConnectionID) {
+				g.dispatcher.BroadcastDisconnect(disconnID, client.Session.Model())
+			}
 		}
 
 		client.Cancel()
-
-		g.manager.Remove(client.ConnectionID)
 
 		close(client.Send)
 

@@ -58,6 +58,7 @@ fun BatteryAccordionCard(
     isCharging: Boolean = false,
     isOnline: Boolean = true,
     isExpanded: Boolean = true,
+    batteryHistory: List<Int> = emptyList(),
     onExpandedChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
@@ -149,6 +150,68 @@ fun BatteryAccordionCard(
                         fontSize = 12.sp,
                         color = FigmaTextMuted
                     )
+
+                    if (batteryHistory.size >= 2) {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        Text(
+                            text = "BATTERY DISCHARGE SPARKLINE (${batteryHistory.size} SAMPLES)",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = FigmaAccentBlue,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        androidx.compose.foundation.Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                        ) {
+                            val w = size.width
+                            val h = size.height
+                            val maxVal = (batteryHistory.maxOrNull() ?: 100).coerceAtLeast(100).toFloat()
+                            val minVal = (batteryHistory.minOrNull() ?: 0).coerceAtMost(0).toFloat()
+                            val range = (maxVal - minVal).coerceAtLeast(1f)
+
+                            val stepX = w / (batteryHistory.size - 1).coerceAtLeast(1)
+                            val path = androidx.compose.ui.graphics.Path()
+                            val fillPath = androidx.compose.ui.graphics.Path()
+
+                            batteryHistory.forEachIndexed { i, pt ->
+                                val x = i * stepX
+                                val y = h - ((pt.toFloat() - minVal) / range) * (h - 8.dp.toPx()) - 4.dp.toPx()
+                                if (i == 0) {
+                                    path.moveTo(x, y)
+                                    fillPath.moveTo(x, h)
+                                    fillPath.lineTo(x, y)
+                                } else {
+                                    path.lineTo(x, y)
+                                    fillPath.lineTo(x, y)
+                                }
+                            }
+                            fillPath.lineTo(w, h)
+                            fillPath.close()
+
+                            drawPath(
+                                path = fillPath,
+                                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                    colors = listOf(
+                                        androidx.compose.ui.graphics.Color(0xFF54C6A2).copy(alpha = 0.35f),
+                                        androidx.compose.ui.graphics.Color(0xFF54C6A2).copy(alpha = 0.0f)
+                                    )
+                                )
+                            )
+
+                            drawPath(
+                                path = path,
+                                color = androidx.compose.ui.graphics.Color(0xFF54C6A2),
+                                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                    width = 2.5.dp.toPx(),
+                                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                )
+                            )
+                        }
+                    }
                 }
             }
         }

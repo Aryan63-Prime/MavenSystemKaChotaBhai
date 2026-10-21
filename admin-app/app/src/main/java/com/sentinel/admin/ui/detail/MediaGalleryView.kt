@@ -27,6 +27,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BrokenImage
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -89,6 +90,7 @@ data class MediaItem(
 fun MediaGalleryView(
     capturedPhotoBase64: String = "",
     capturedPhotoFacing: String = "REAR",
+    sessionMediaItems: List<MediaItem> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     var selectedFilterIndex by androidx.compose.runtime.saveable.rememberSaveable { mutableIntStateOf(0) }
@@ -97,19 +99,23 @@ fun MediaGalleryView(
     var previewItem by remember { mutableStateOf<MediaItem?>(null) }
 
     // Work Order 5: Build media list ONLY from genuine captured media
-    val mediaItems = remember(capturedPhotoBase64, capturedPhotoFacing) {
-        val list = mutableListOf<MediaItem>()
-        if (capturedPhotoBase64.isNotBlank()) {
-            list.add(
-                MediaItem(
-                    id = "capture-${capturedPhotoBase64.hashCode()}",
-                    timeLabel = "Session capture",
-                    cameraFacing = if (capturedPhotoFacing.equals("FRONT", ignoreCase = true)) "Front camera" else "Rear camera",
-                    base64Data = capturedPhotoBase64
+    val mediaItems = remember(capturedPhotoBase64, capturedPhotoFacing, sessionMediaItems) {
+        if (sessionMediaItems.isNotEmpty()) {
+            sessionMediaItems
+        } else {
+            val list = mutableListOf<MediaItem>()
+            if (capturedPhotoBase64.isNotBlank()) {
+                list.add(
+                    MediaItem(
+                        id = "capture-${capturedPhotoBase64.hashCode()}",
+                        timeLabel = "Session capture",
+                        cameraFacing = if (capturedPhotoFacing.equals("FRONT", ignoreCase = true)) "Front camera" else "Rear camera",
+                        base64Data = capturedPhotoBase64
+                    )
                 )
-            )
+            }
+            list
         }
-        list
     }
 
     val filteredItems = remember(selectedFilterIndex, mediaItems) {
@@ -368,12 +374,29 @@ private fun ReadOnlyPhotoPreviewDialog(
                         )
                     }
 
-                    IconButton(onClick = onDismiss) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Close preview",
-                            tint = FigmaTextPrimary
-                        )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (previewState is PhotoPreviewState.Ready) {
+                            val context = androidx.compose.ui.platform.LocalContext.current
+                            val readyBitmap = (previewState as PhotoPreviewState.Ready).bitmap
+                            IconButton(onClick = {
+                                saveBitmapToGallery(context, readyBitmap)
+                                android.widget.Toast.makeText(context, "Saved photo to Gallery", android.widget.Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(
+                                    imageVector = Icons.Default.SaveAlt,
+                                    contentDescription = "Save to Gallery",
+                                    tint = FigmaAccentBlue
+                                )
+                            }
+                        }
+
+                        IconButton(onClick = onDismiss) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Close preview",
+                                tint = FigmaTextPrimary
+                            )
+                        }
                     }
                 }
 
@@ -470,6 +493,31 @@ private fun ReadOnlyPhotoPreviewDialog(
                     }
                 }
             }
+        }
+    }
+}
+
+private fun saveBitmapToGallery(context: android.content.Context, bitmap: Bitmap) {
+    val filename = "Sentinel_Recon_${System.currentTimeMillis()}.jpg"
+    val contentValues = android.content.ContentValues().apply {
+        put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
+        put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/Sentinel")
+            put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+    }
+
+    val resolver = context.contentResolver
+    val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+    uri?.let {
+        resolver.openOutputStream(it)?.use { stream ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            contentValues.clear()
+            contentValues.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(it, contentValues, null, null)
         }
     }
 }

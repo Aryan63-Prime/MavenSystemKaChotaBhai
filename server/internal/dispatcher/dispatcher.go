@@ -164,7 +164,12 @@ func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte)
 			if as, ok := session.(interface{ IsAdmin() bool }); ok {
 				isAdmin = as.IsAdmin()
 			}
-			if !isAdmin {
+			isRegistered := true
+			if rs, ok := session.(interface{ IsRegistered() bool }); ok {
+				isRegistered = rs.IsRegistered()
+			}
+			deviceID := session.DeviceID()
+			if !isAdmin && isRegistered && deviceID != "" {
 				ts := time.Now().UTC().Format(time.RFC3339)
 				var modelPtr *string
 				if ms, ok := session.(interface{ Model() string }); ok {
@@ -172,10 +177,6 @@ func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte)
 					if m != "" {
 						modelPtr = &m
 					}
-				}
-				deviceID := session.DeviceID()
-				if deviceID == "" {
-					deviceID = session.AuthenticatedDeviceID()
 				}
 				d.broadcastDeviceUpdate(protocol.DeviceUpdateMessage{
 					Event:     protocol.EventHeartbeat,

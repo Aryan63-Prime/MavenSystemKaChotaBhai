@@ -58,6 +58,18 @@ class AudioMonitor(
     private val _statistics = MutableStateFlow(AudioStatistics())
     val statistics: StateFlow<AudioStatistics> = _statistics.asStateFlow()
 
+    private val _incomingAudioLevel = MutableStateFlow(0f)
+    val incomingAudioLevel: StateFlow<Float> = _incomingAudioLevel.asStateFlow()
+
+    private val _incomingAudioDbFs = MutableStateFlow(-60)
+    val incomingAudioDbFs: StateFlow<Int> = _incomingAudioDbFs.asStateFlow()
+
+    private val _incomingAudioFreqHz = MutableStateFlow(0)
+    val incomingAudioFreqHz: StateFlow<Int> = _incomingAudioFreqHz.asStateFlow()
+
+    private val _incomingAcousticClass = MutableStateFlow("QUIET ROOM")
+    val incomingAcousticClass: StateFlow<String> = _incomingAcousticClass.asStateFlow()
+
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
 
@@ -184,6 +196,10 @@ class AudioMonitor(
             current == PlaybackState.Connecting) {
             audioOutput.pause()
             _playbackState.value = PlaybackState.Paused
+            _incomingAudioLevel.value = 0f
+            _incomingAudioDbFs.value = -60
+            _incomingAudioFreqHz.value = 0
+            _incomingAcousticClass.value = "QUIET ROOM"
             Log.i(TAG, "Audio paused")
         }
     }
@@ -197,6 +213,7 @@ class AudioMonitor(
         if (_playbackState.value == PlaybackState.Paused) {
             audioOutput.resume()
             jitterBuffer.clear() // Clear stale frames from before disconnect
+            activeStreamId = null
             _playbackState.value = PlaybackState.Buffering
             Log.i(TAG, "Audio resumed — rebuffering")
         }
@@ -325,6 +342,43 @@ class AudioMonitor(
                             _recordingDurationMs.value = System.currentTimeMillis() - recordingStartTimeMs
                         }
                         framesDecoded++
+
+                        var sumSq = 0.0
+                        var zeroCrossings = 0
+                        var peak = 0.0
+                        var lag1Cross = 0.0
+                        for (i in 0 until decoded) {
+                            val s = pcmBuffer[i].toInt()
+                            val norm = s / 32768.0
+                            val absNorm = kotlin.math.abs(norm)
+                            if (absNorm > peak) peak = absNorm
+                            sumSq += norm * norm
+                            if (i > 0) {
+                                val prev = pcmBuffer[i - 1].toInt()
+                                val prevNorm = prev / 32768.0
+                                lag1Cross += norm * prevNorm
+                                if ((s >= 0 && prev < 0) || (s < 0 && prev >= 0)) {
+                                    zeroCrossings++
+                                }
+                            }
+                        }
+                        val rms = kotlin.math.sqrt(sumSq / decoded).toFloat()
+                        val dbFs = if (rms > 0.0001f) (20.0 * kotlin.math.log10(rms.toDouble())).toInt().coerceIn(-60, 0) else -60
+                        val freqHz = if (dbFs > -50) ((zeroCrossings * 16000) / (2 * decoded.coerceAtLeast(1))) else 0
+                        val crestFactor = if (rms > 0.0001f) (peak / rms) else 1.0
+                        val voicingCorr = if (sumSq > 0.000001) (lag1Cross / sumSq) else 0.0
+                        val acousticClass = when {
+                            dbFs <= -46 -> "QUIET ROOM"
+                            crestFactor > 5.2 && dbFs > -22 -> "SHARP IMPULSE / KNOCK"
+                            dbFs > -12 -> "LOUD / HIGH SPL"
+                            voicingCorr > 0.68 && freqHz in 85..450 && dbFs > -42 -> "HUMAN SPEECH (VOICED)"
+                            freqHz in 1..109 && dbFs > -38 -> "LOW-FREQ HUM / ENGINE"
+                            else -> "AMBIENT SOUND"
+                        }
+                        _incomingAudioLevel.value = (rms * 3.5f).coerceIn(0f, 1f)
+                        _incomingAudioDbFs.value = dbFs
+                        _incomingAudioFreqHz.value = freqHz
+                        _incomingAcousticClass.value = acousticClass
                     } else {
                         // Decoder failure — drop frame, continue. Never recreate decoder.
                         decoderFailures++
@@ -365,6 +419,10 @@ class AudioMonitor(
         audioOutput.release()
         decoder.close()
         jitterBuffer.clear()
+        _incomingAudioLevel.value = 0f
+        _incomingAudioDbFs.value = -60
+        _incomingAudioFreqHz.value = 0
+        _incomingAcousticClass.value = "QUIET ROOM"
         Log.i(TAG, "Audio pipeline stopped")
     }
 

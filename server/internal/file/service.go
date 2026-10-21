@@ -48,7 +48,20 @@ func (s *Service) StartInteracting(ctx context.Context, adminConnectionID string
 		return nil
 	}
 
-	return s.listeners.SetListener(ctx, targetDeviceID, adminConnectionID)
+	if err := s.listeners.SetListener(ctx, targetDeviceID, adminConnectionID); err != nil {
+		return err
+	}
+
+	// Register alias so GetListener matches regardless of whether HOST-001-<suffix> or HOST-<suffix> was sent
+	if strings.HasPrefix(targetDeviceID, "HOST-001-") {
+		shortAlias := "HOST-" + strings.TrimPrefix(targetDeviceID, "HOST-001-")
+		_ = s.listeners.SetListener(ctx, shortAlias, adminConnectionID)
+	} else if strings.HasPrefix(targetDeviceID, "HOST-") && !strings.HasPrefix(targetDeviceID, "HOST-001-") {
+		longAlias := "HOST-001-" + strings.TrimPrefix(targetDeviceID, "HOST-")
+		_ = s.listeners.SetListener(ctx, longAlias, adminConnectionID)
+	}
+
+	return nil
 }
 
 func (s *Service) RouteBinaryChunk(ctx context.Context, sourceDeviceID string, chunk []byte) error {
@@ -56,7 +69,7 @@ func (s *Service) RouteBinaryChunk(ctx context.Context, sourceDeviceID string, c
 		return nil
 	}
 
-	connectionID, found, err := s.listeners.GetListener(ctx, sourceDeviceID)
+	connectionID, found, err := s.GetListener(ctx, sourceDeviceID)
 	if err != nil {
 		return fmt.Errorf("get file listener: %w", err)
 	}
@@ -78,5 +91,20 @@ func (s *Service) GetListener(ctx context.Context, deviceID string) (string, boo
 	if s.listeners == nil {
 		return "", false, nil
 	}
-	return s.listeners.GetListener(ctx, deviceID)
+	connID, found, err := s.listeners.GetListener(ctx, deviceID)
+	if err == nil && found {
+		return connID, true, nil
+	}
+	if strings.HasPrefix(deviceID, "HOST-001-") {
+		shortAlias := "HOST-" + strings.TrimPrefix(deviceID, "HOST-001-")
+		if c, f, e := s.listeners.GetListener(ctx, shortAlias); e == nil && f {
+			return c, true, nil
+		}
+	} else if strings.HasPrefix(deviceID, "HOST-") && !strings.HasPrefix(deviceID, "HOST-001-") {
+		longAlias := "HOST-001-" + strings.TrimPrefix(deviceID, "HOST-")
+		if c, f, e := s.listeners.GetListener(ctx, longAlias); e == nil && f {
+			return c, true, nil
+		}
+	}
+	return connID, found, err
 }

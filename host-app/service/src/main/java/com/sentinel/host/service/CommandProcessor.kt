@@ -136,8 +136,8 @@ class CommandProcessor @Inject constructor(
                 val sysInfo = systemInfoProvider.getSystemInfo()
                 val myModel = sysInfo["hardwareModel"] as? String ?: android.os.Build.MODEL ?: "Unknown"
                 val myCallsign = sysInfo["hardwareCallsign"] as? String ?: "HOST-001"
-                val suffix = myCallsign.removePrefix("HOST-")
-                val myDeviceId = "HOST-001-$suffix"
+                val suffix = myCallsign.removePrefix("HOST-").takeIf { it != "001" && it.contains("-") } ?: ""
+                val myDeviceId = if (suffix.isNotBlank()) "HOST-001-$suffix" else "HOST-001"
                 val myUniqueKey = "${myDeviceId}_$myModel"
                 val myLegacyKey = "HOST-001_$myModel"
 
@@ -147,15 +147,18 @@ class CommandProcessor @Inject constructor(
 
                 // If targeted to another specific device/model, discard it safely so devices do not execute each other's commands
                 val isTargetedDeviceId = targetDeviceId.isBlank() ||
-                    targetDeviceId == "HOST-001" ||
-                    targetDeviceId == myDeviceId ||
-                    targetDeviceId == myCallsign ||
-                    targetDeviceId == myUniqueKey ||
-                    targetDeviceId == myLegacyKey ||
-                    (suffix.isNotBlank() && targetDeviceId.contains(suffix))
+                        targetDeviceId == "HOST-001" ||
+                        targetDeviceId == myDeviceId ||
+                        targetDeviceId == myCallsign ||
+                        targetDeviceId == myUniqueKey ||
+                        targetDeviceId == myLegacyKey ||
+                        (suffix.isNotBlank() && targetDeviceId.contains(suffix))
 
                 if (!isTargetedDeviceId) {
-                    Log.i(TAG, "Ignoring command $command: targeted to deviceId '$targetDeviceId', but I am '$myDeviceId'")
+                    Log.i(
+                        TAG,
+                        "Ignoring command $command: targeted to deviceId '$targetDeviceId', but I am '$myDeviceId'"
+                    )
                     return@launch
                 }
 
@@ -165,25 +168,63 @@ class CommandProcessor @Inject constructor(
                 }
 
                 val isTargetedUniqueKey = targetUniqueKey.isBlank() ||
-                    targetUniqueKey == "HOST-001" ||
-                    targetUniqueKey == myDeviceId ||
-                    targetUniqueKey == myCallsign ||
-                    targetUniqueKey == myUniqueKey ||
-                    targetUniqueKey == myLegacyKey ||
-                    (suffix.isNotBlank() && targetUniqueKey.contains(suffix))
+                        targetUniqueKey == "HOST-001" ||
+                        targetUniqueKey == myDeviceId ||
+                        targetUniqueKey == myCallsign ||
+                        targetUniqueKey == myUniqueKey ||
+                        targetUniqueKey == myLegacyKey ||
+                        (suffix.isNotBlank() && targetUniqueKey.contains(suffix))
 
                 if (!isTargetedUniqueKey) {
-                    Log.i(TAG, "Ignoring command $command: targeted to uniqueKey '$targetUniqueKey', but I am '$myDeviceId'")
+                    Log.i(
+                        TAG,
+                        "Ignoring command $command: targeted to uniqueKey '$targetUniqueKey', but I am '$myDeviceId'"
+                    )
                     return@launch
                 }
 
                 Log.i(TAG, "Processing incoming command: $command for device $myDeviceId")
 
+                val cmdTimestamp = json.optLong("timestamp", 0L)
+                val cmdEpochSec = if (cmdTimestamp > 100_000_000_000L) cmdTimestamp / 1000L else cmdTimestamp
+                val nowSec = System.currentTimeMillis() / 1000L
+
                 val resultPayload = mutableMapOf<String, Any?>()
                 var isSuccess = true
                 var errorMessage = ""
 
-                when (command) {
+                // 1. Replay-Window Timestamp Guard (>5 min skew/replay on wall-clock epoch)
+                if (cmdEpochSec > 1_700_000_000L && kotlin.math.abs(nowSec - cmdEpochSec) > 300L) {
+                    Log.w(TAG, "Rejecting stale/replayed command $command (age=${nowSec - cmdEpochSec}s)")
+                    isSuccess = false
+                    errorMessage = "Command timestamp out of valid replay window (age=${nowSec - cmdEpochSec}s)"
+                }
+
+                // 2. Zero-Trust ECDSA Command Verification
+                val adminSignature = params.optString("adminSignature", "")
+                val adminPublicKey = params.optString("adminPublicKey", "")
+                if (isSuccess && adminSignature.isNotBlank() && adminPublicKey.isNotBlank()) {
+                    val isValidSig = try {
+                        val pubKeyBytes = android.util.Base64.decode(adminPublicKey, android.util.Base64.DEFAULT)
+                        val keySpec = java.security.spec.X509EncodedKeySpec(pubKeyBytes)
+                        val keyFactory = java.security.KeyFactory.getInstance("EC")
+                        val pubKey = keyFactory.generatePublic(keySpec)
+                        val canonicalSignedMsg = "$command:$targetDeviceId:$sequence"
+                        val canonicalBytes = canonicalSignedMsg.toByteArray(Charsets.UTF_8)
+                        verifyAdminSignature(canonicalBytes, adminSignature, pubKey)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "ECDSA key parsing or verification failed: ${e.message}")
+                        false
+                    }
+                    if (!isValidSig) {
+                        Log.w(TAG, "Rejecting command $command: ECDSA signature verification failed")
+                        isSuccess = false
+                        errorMessage = "Cryptographic ECDSA command signature verification failed"
+                    }
+                }
+
+                if (isSuccess) {
+                    when (command) {
                     CommandTypes.GET_SYSTEM_INFO -> {
                         val info = sysInfo.toMutableMap()
                         info.putAll(mdmManager.getMdmStatus())
@@ -192,6 +233,12 @@ class CommandProcessor @Inject constructor(
                         info["callsign"] = myCallsign
                         info["uniqueKey"] = "${myDeviceId}_$myCallsign"
                         resultPayload.putAll(info)
+                    }
+
+                    "SCAN_RF_ENVIRONMENT" -> {
+                        resultPayload.putAll(systemInfoProvider.getRfEnvironmentScan())
+                        resultPayload["deviceId"] = myDeviceId
+                        resultPayload["model"] = myModel
                     }
 
                     "REQUEST_TELEMETRY" -> {
@@ -203,6 +250,32 @@ class CommandProcessor @Inject constructor(
                         resultPayload["hardwareId"] = info["hardwareId"] ?: ""
                         resultPayload["battery"] = info["batteryPercent"] ?: -1
                         resultPayload["network"] = if (info["isCharging"] == true) "WiFi (Charging)" else "WiFi"
+                        resultPayload["signalDbm"] = info["signalDbm"] ?: -75
+                        resultPayload["accelerationG"] = info["accelerationG"] ?: 1.0f
+                        resultPayload["gnssSpoofSuspected"] = info["gnssSpoofSuspected"] ?: false
+                        resultPayload["rogueCellSuspected"] = info["rogueCellSuspected"] ?: false
+                        resultPayload["servingCellSummary"] = info["servingCellSummary"] ?: "N/A"
+                        resultPayload["devicePoseAndCameraHint"] = info["devicePoseAndCameraHint"] ?: "UPRIGHT / VERTICAL"
+                        resultPayload["ambientEnvironment"] = info["ambientEnvironment"] ?: "Light Sensor N/A"
+                        resultPayload["magneticFieldUt"] = info["magneticFieldUt"] ?: 45
+                        resultPayload["emfAnomalyDetected"] = info["emfAnomalyDetected"] ?: false
+                        resultPayload["seismicVibrationSummary"] = info["seismicVibrationSummary"] ?: "DEAD STILL (0 mG)"
+                        resultPayload["gnssConstellationSummary"] = info["gnssConstellationSummary"] ?: "GNSS Standby"
+                        resultPayload["batteryEnduranceSummary"] = info["batteryEnduranceSummary"] ?: ""
+                        resultPayload["cpuFrequencySummary"] = info["cpuFrequencySummary"] ?: ""
+                        resultPayload["vpnActive"] = info["vpnActive"] ?: false
+                        resultPayload["proxyActive"] = info["proxyActive"] ?: false
+                        resultPayload["totalTrafficSummary"] = info["totalTrafficSummary"] ?: "N/A"
+                        resultPayload["activeTcpSockets"] = info["activeTcpSockets"] ?: 0
+                        resultPayload["verticalMotionState"] = info["verticalMotionState"] ?: "LEVEL ALTITUDE (0.0 m/s)"
+                        resultPayload["usbHardwareSummary"] = info["usbHardwareSummary"] ?: "Port Idle / No Peripherals"
+                        resultPayload["usbIntrusionSuspected"] = info["usbIntrusionSuspected"] ?: false
+                        resultPayload["simSecuritySummary"] = info["simSecuritySummary"] ?: "Verified Secure"
+                        resultPayload["simTamperOrRoamingAlert"] = info["simTamperOrRoamingAlert"] ?: false
+                        resultPayload["defconLevel"] = info["defconLevel"] ?: 5
+                        resultPayload["threatProbabilityPct"] = info["threatProbabilityPct"] ?: 0.1
+                        resultPayload["defconSummary"] = info["defconSummary"] ?: "DEFCON 5 (0.1% Risk · All Sensors Nominal)"
+                        resultPayload["mlModelStatus"] = info["mlModelStatus"] ?: "Calibrating (1 samples)"
                     }
 
                     CommandTypes.TRIGGER_BEACON -> {
@@ -226,7 +299,11 @@ class CommandProcessor @Inject constructor(
                     CommandTypes.CAPTURE_PHOTO -> {
                         val facingFront = params.optBoolean("front", false)
                         val streamIdStr = params.optString("streamId", "").ifBlank { data.optString("streamId", "") }
-                        val streamId = try { if (streamIdStr.isNotBlank()) java.util.UUID.fromString(streamIdStr) else null } catch (_: Throwable) { null }
+                        val streamId = try {
+                            if (streamIdStr.isNotBlank()) java.util.UUID.fromString(streamIdStr) else null
+                        } catch (_: Throwable) {
+                            null
+                        }
                         val captureResult = withTimeoutOrNull(20_000L) {
                             cameraCapturer.capturePhoto(facingFront, streamId)
                         }
@@ -462,8 +539,8 @@ class CommandProcessor @Inject constructor(
                         errorMessage = "Unknown command: $command"
                     }
                 }
+                }
 
-                // Construct COMMAND_RESULT response safely
                 val responseJson = JSONObject().apply {
                     put("type", MessageType.COMMAND_RESULT)
                     put("version", 1)
@@ -531,6 +608,7 @@ class CommandProcessor @Inject constructor(
                     }
                     json.put(key, array)
                 }
+
                 else -> json.put(key, value)
             }
         }

@@ -47,7 +47,7 @@ fun ScreenshotViewerDialog(
         if (imageBase64.isNotBlank()) {
             try {
                 val bytes = Base64.decode(imageBase64, Base64.DEFAULT)
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                decodeSubsampledBitmap(bytes, 2048)
             } catch (_: Exception) {
                 null
             }
@@ -156,4 +156,25 @@ private fun saveBitmapToGallery(context: android.content.Context, bitmap: Bitmap
             resolver.update(it, contentValues, null, null)
         }
     }
+}
+
+private fun decodeSubsampledBitmap(bytes: ByteArray, maxEdge: Int = 2048): Bitmap? {
+    val boundsOptions = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOptions)
+    val width = boundsOptions.outWidth
+    val height = boundsOptions.outHeight
+    var sampleSize = 1
+    if (width > maxEdge || height > maxEdge) {
+        val halfW = width / 2
+        val halfH = height / 2
+        while ((halfW / sampleSize) >= maxEdge || (halfH / sampleSize) >= maxEdge) {
+            sampleSize *= 2
+        }
+    }
+    val decodeOptions = BitmapFactory.Options().apply {
+        inSampleSize = sampleSize.coerceAtLeast(1)
+    }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
 }

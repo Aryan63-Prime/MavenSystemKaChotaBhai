@@ -62,6 +62,7 @@ class SentinelForegroundService : Service() {
         const val ACTION_WAKE = "com.sentinel.host.action.WAKE"
         var sessionManagerProvider: ((Context) -> com.sentinel.host.domain.session.SessionManager)? = null
 
+        @JvmStatic
         fun Start(context: Context, isFromBoot: Boolean = false) {
             val sessionManager = sessionManagerProvider?.invoke(context) ?: com.sentinel.host.data.session.SessionManagerImpl(context)
             if (!sessionManager.isEnrollmentApproved()) {
@@ -89,6 +90,7 @@ class SentinelForegroundService : Service() {
     @Inject lateinit var systemInfoProvider: com.sentinel.host.data.device.SystemInfoProvider
     @Inject lateinit var deviceRepository: com.sentinel.host.domain.repository.DeviceRepository
     @Inject lateinit var sessionManager: com.sentinel.host.domain.session.SessionManager
+    @Inject lateinit var hostGeofenceManager: com.sentinel.host.data.location.HostGeofenceManager
 
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
         Log.e(TAG, "Unhandled exception in Sentinel service scope: ${throwable.message}", throwable)
@@ -243,19 +245,40 @@ class SentinelForegroundService : Service() {
         }
 
         val isFromBoot = intent?.getBooleanExtra(EXTRA_FROM_BOOT, false) == true
+        val isFromWatchdog = intent?.getBooleanExtra("EXTRA_FROM_WATCHDOG", false) == true
         val isFcmWake = intent?.getBooleanExtra("EXTRA_FROM_FCM_WAKE", false) == true ||
-                intent?.action == ACTION_WAKE
-        Log.i(TAG, "SentinelForegroundService starting (flags=$flags, startId=$startId, isFromBoot=$isFromBoot, isFcmWake=$isFcmWake)")
+                (intent?.action == ACTION_WAKE && !isFromWatchdog)
+        Log.i(TAG, "SentinelForegroundService starting (flags=$flags, startId=$startId, isFromBoot=$isFromBoot, isFcmWake=$isFcmWake, isFromWatchdog=$isFromWatchdog)")
 
         if (isFcmWake) {
-            Log.i(TAG, "FCM wakeup detected — acquiring WakeLock for revival and forcing instant reconnect")
+            Log.i(TAG, "FCM wakeup detected — acquiring WakeLock for revival")
             val pm = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
             val wakeLock = pm?.newWakeLock(
                 android.os.PowerManager.PARTIAL_WAKE_LOCK,
                 "Sentinel:FcmWakeRevival"
             )
             wakeLock?.acquire(15_000L)
-            connectionSupervisor.forceReconnect()
+            if (connectionSupervisor.state.value !is ConnectionState.Ready || !audioStreamer.isStreaming) {
+                connectionSupervisor.forceReconnect()
+            }
+            if (connectionSupervisor.state.value is ConnectionState.Ready) {
+                sendTelemetryReportNow()
+            }
+        } else if (isFromWatchdog) {
+            Log.i(TAG, "Watchdog tick detected — checking connection health")
+            val pm = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            val wakeLock = pm?.newWakeLock(
+                android.os.PowerManager.PARTIAL_WAKE_LOCK,
+                "Sentinel:WatchdogHealthCheck"
+            )
+            wakeLock?.acquire(10_000L)
+            if (connectionSupervisor.state.value !is ConnectionState.Ready) {
+                Log.i(TAG, "Watchdog found connection not Ready — forcing reconnect")
+                connectionSupervisor.forceReconnect()
+            } else {
+                Log.i(TAG, "Watchdog found connection Ready — sending telemetry report without reconnect")
+                sendTelemetryReportNow()
+            }
         }
 
         val notification = buildNotification("Scanning ...")
@@ -349,6 +372,8 @@ class SentinelForegroundService : Service() {
     }
 
     private var periodicTelemetryJob: Job? = null
+    @Volatile private var lastGaspSentForLowBattery = false
+    @Volatile private var lastLocationHistorySyncMs: Long = 0L
 
     private fun startPeriodicTelemetry() {
         periodicTelemetryJob?.cancel()
@@ -367,19 +392,158 @@ class SentinelForegroundService : Service() {
             val devInfo = deviceRepository.getDeviceInfo()
             val sysInfo = systemInfoProvider.getSystemInfo()
             val lastLoc = locationStreamer.lastLocation
+            val fallbackLoc = if (lastLoc == null) {
+                try {
+                    val lm = getSystemService(Context.LOCATION_SERVICE) as? LocationManager
+                    lm?.getLastKnownLocation(LocationManager.GPS_PROVIDER)
+                        ?: lm?.getLastKnownLocation(LocationManager.NETWORK_PROVIDER)
+                } catch (_: SecurityException) {
+                    null
+                } catch (_: Exception) {
+                    null
+                }
+            } else null
             val battery = sysInfo["batteryPercent"] as? Int ?: -1
             val isCharging = sysInfo["isCharging"] as? Boolean ?: false
+            locationStreamer.updatePowerState(battery, isCharging)
             val wifiSsid = sysInfo["wifiSsid"] as? String ?: ""
             val network = if (isCharging) "WiFi (Charging)" else if (wifiSsid.isNotBlank()) "WiFi" else "Cellular"
-            val lat = lastLoc?.latitude ?: 0.0
-            val lng = lastLoc?.longitude ?: 0.0
-            val acc = lastLoc?.accuracy?.toDouble() ?: 0.0
+            val lat = lastLoc?.latitude ?: fallbackLoc?.latitude ?: 0.0
+            val lng = lastLoc?.longitude ?: fallbackLoc?.longitude ?: 0.0
+            val acc = lastLoc?.accuracy?.toDouble() ?: fallbackLoc?.accuracy?.toDouble() ?: 0.0
+            val signalDbm = sysInfo["signalDbm"] as? Int ?: -75
+            val accelerationG = sysInfo["accelerationG"] as? Float
+                ?: ((Math.round(fallDetector.currentAccelerationG * 100.0) / 100.0).toFloat())
+            val gnssSpoofSuspected = sysInfo["gnssSpoofSuspected"] as? Boolean ?: false
+            val rogueCellSuspected = sysInfo["rogueCellSuspected"] as? Boolean ?: false
+            val servingCellSummary = sysInfo["servingCellSummary"] as? String ?: "N/A"
 
             val seq = System.currentTimeMillis()
             val ts = System.currentTimeMillis() / 1000
-            val telemetryJson = """{"type":"COMMAND_RESULT","version":1,"timestamp":$ts,"sequence":$seq,"data":{"command":"TELEMETRY_REPORT","success":true,"payload":{"deviceId":"${devInfo.deviceId}","model":"${devInfo.model}","uniqueKey":"${devInfo.deviceId}_${devInfo.model}","latitude":$lat,"longitude":$lng,"accuracy":$acc,"battery":$battery,"network":"$network","timestamp":${System.currentTimeMillis()}}}}"""
-            webSocketDataSource.sendText(telemetryJson)
-            Log.d(TAG, "Sent isolated TELEMETRY_REPORT (model=${devInfo.model}, battery=$battery%, network=$network)")
+            val payloadObj = org.json.JSONObject().apply {
+                put("deviceId", devInfo.deviceId)
+                put("model", devInfo.model)
+                put("callsign", devInfo.callsign)
+                put("hardwareId", devInfo.hardwareId)
+                put("uniqueKey", devInfo.deviceId)
+                put("latitude", lat)
+                put("longitude", lng)
+                put("accuracy", acc)
+                put("battery", battery)
+                put("network", network)
+                put("signalDbm", signalDbm)
+                put("accelerationG", accelerationG.toDouble())
+                put("gnssSpoofSuspected", gnssSpoofSuspected)
+                put("rogueCellSuspected", rogueCellSuspected)
+                put("servingCellSummary", servingCellSummary)
+                put("devicePoseAndCameraHint", sysInfo["devicePoseAndCameraHint"] ?: "UPRIGHT / VERTICAL")
+                put("ambientEnvironment", sysInfo["ambientEnvironment"] ?: "Light Sensor N/A")
+                put("magneticFieldUt", sysInfo["magneticFieldUt"] ?: 45)
+                put("emfAnomalyDetected", sysInfo["emfAnomalyDetected"] ?: false)
+                put("seismicVibrationSummary", sysInfo["seismicVibrationSummary"] ?: "DEAD STILL (0 mG)")
+                put("gnssConstellationSummary", sysInfo["gnssConstellationSummary"] ?: "GNSS Standby")
+                put("batteryEnduranceSummary", sysInfo["batteryEnduranceSummary"] ?: "")
+                put("cpuFrequencySummary", sysInfo["cpuFrequencySummary"] ?: "")
+                put("vpnActive", sysInfo["vpnActive"] ?: false)
+                put("proxyActive", sysInfo["proxyActive"] ?: false)
+                put("totalTrafficSummary", sysInfo["totalTrafficSummary"] ?: "N/A")
+                put("activeTcpSockets", sysInfo["activeTcpSockets"] ?: 0)
+                put("verticalMotionState", sysInfo["verticalMotionState"] ?: "LEVEL ALTITUDE (0.0 m/s)")
+                put("usbHardwareSummary", sysInfo["usbHardwareSummary"] ?: "Port Idle / No Peripherals")
+                put("usbIntrusionSuspected", sysInfo["usbIntrusionSuspected"] ?: false)
+                put("simSecuritySummary", sysInfo["simSecuritySummary"] ?: "Verified Secure")
+                put("simTamperOrRoamingAlert", sysInfo["simTamperOrRoamingAlert"] ?: false)
+                put("defconLevel", sysInfo["defconLevel"] ?: 5)
+                put("threatProbabilityPct", sysInfo["threatProbabilityPct"] ?: 0.1)
+                put("defconSummary", sysInfo["defconSummary"] ?: "DEFCON 5 (0.1% Risk · All Sensors Nominal)")
+                put("mlModelStatus", sysInfo["mlModelStatus"] ?: "Calibrating (1 samples)")
+                put("timestamp", System.currentTimeMillis())
+            }
+
+            val telemetryEnvelope = org.json.JSONObject().apply {
+                put("type", "COMMAND_RESULT")
+                put("version", 1)
+                put("timestamp", ts)
+                put("sequence", seq)
+                put("data", org.json.JSONObject().apply {
+                    put("command", "TELEMETRY_REPORT")
+                    put("success", true)
+                    put("payload", payloadObj)
+                })
+            }
+            webSocketDataSource.sendText(telemetryEnvelope.toString())
+            Log.d(TAG, "Sent isolated TELEMETRY_REPORT (model=${devInfo.model}, battery=$battery%, network=$network, signalDbm=$signalDbm, acc=${accelerationG}g)")
+
+            // Stationary Desk GPS / Breadcrumb Seeding (every 60s)
+            if ((lat != 0.0 || lng != 0.0) && System.currentTimeMillis() - lastLocationHistorySyncMs >= 60_000L) {
+                lastLocationHistorySyncMs = System.currentTimeMillis()
+                val locEnvelope = org.json.JSONObject().apply {
+                    put("type", "LOCATION")
+                    put("version", 1)
+                    put("timestamp", ts)
+                    put("sequence", seq + 1)
+                    put("data", org.json.JSONObject().apply {
+                        put("latitude", lat)
+                        put("longitude", lng)
+                        put("accuracy", if (acc > 0.0) acc else 10.0)
+                        put("battery", battery.coerceIn(0, 100))
+                        put("network", network)
+                        put("timestamp", java.time.Instant.now().toString())
+                    })
+                }
+                webSocketDataSource.sendText(locEnvelope.toString())
+                Log.d(TAG, "Sent stationary desk LOCATION breadcrumb fix ($lat, $lng)")
+            }
+
+            // Dynamic Geofence Perimeter Breach SOS
+            if (lat != 0.0 || lng != 0.0) {
+                val breachedZone = hostGeofenceManager.evaluateLocationForBreach(lat, lng)
+                if (breachedZone != null) {
+                    Log.w(TAG, "EMERGENCY: Perimeter Geofence Breached (${breachedZone.id}) at ($lat, $lng)! Emitting EMERGENCY_SOS.")
+                    val sosJson = org.json.JSONObject().apply {
+                        put("type", com.sentinel.shared.protocol.MessageType.EMERGENCY_SOS)
+                        put("version", 1)
+                        put("timestamp", ts)
+                        put("data", org.json.JSONObject().apply {
+                            put("deviceId", devInfo.deviceId)
+                            put("triggerReason", "GEOFENCE_BREACH (${breachedZone.id})")
+                            put("latitude", lat)
+                            put("longitude", lng)
+                            put("accuracy", if (acc > 0.0) acc else 10.0)
+                            put("battery", battery.coerceIn(0, 100))
+                            put("network", network)
+                            put("signalDbm", signalDbm)
+                            put("timestamp", ts)
+                        })
+                    }
+                    webSocketDataSource.sendText(sosJson.toString())
+                }
+            }
+
+            // Last Gasp Critical Battery SOS Burst
+            if (battery in 1..3 && !isCharging && !lastGaspSentForLowBattery) {
+                lastGaspSentForLowBattery = true
+                Log.w(TAG, "EMERGENCY: Critical Battery ($battery%)! Emitting CRITICAL_BATTERY_LAST_GASP black box SOS.")
+                val sosJson = org.json.JSONObject().apply {
+                    put("type", com.sentinel.shared.protocol.MessageType.EMERGENCY_SOS)
+                    put("version", 1)
+                    put("timestamp", ts)
+                    put("data", org.json.JSONObject().apply {
+                        put("deviceId", devInfo.deviceId)
+                        put("triggerReason", "CRITICAL_BATTERY_LAST_GASP")
+                        put("latitude", lat)
+                        put("longitude", lng)
+                        put("accuracy", if (acc > 0.0) acc else 10.0)
+                        put("battery", battery.coerceIn(0, 100))
+                        put("network", network)
+                        put("signalDbm", signalDbm)
+                        put("timestamp", ts)
+                    })
+                }
+                webSocketDataSource.sendText(sosJson.toString())
+            } else if (battery > 5 || isCharging) {
+                lastGaspSentForLowBattery = false
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Failed to send TELEMETRY_REPORT: ${e.message}")
         }

@@ -91,6 +91,10 @@ class FileViewModel @Inject constructor(
                     if (json.optString("type") == "COMMAND_RESULT") {
                         val data = json.optJSONObject("data") ?: return@collect
                         if (data.optString("command") == "PREVIEW_FILE") {
+                            val resDeviceId = data.optString("deviceId", "")
+                            if (pendingLoadDeviceId != null && resDeviceId.isNotBlank() && resDeviceId != "HOST-001" && !pendingLoadDeviceId!!.contains(resDeviceId.removePrefix("HOST-001-"))) {
+                                return@collect
+                            }
                             _isPreviewLoading.value = false
                             if (data.optBoolean("success", false)) {
                                 val payload = data.optJSONObject("payload")
@@ -112,6 +116,7 @@ class FileViewModel @Inject constructor(
     }
 
     fun requestPreview(deviceId: String, item: FileItem) {
+        pendingLoadDeviceId = deviceId
         val path = if (_currentPath.value.endsWith("/")) "${_currentPath.value}${item.name}" else "${_currentPath.value}/${item.name}"
         _isPreviewLoading.value = true
         val cmd = org.json.JSONObject().apply {

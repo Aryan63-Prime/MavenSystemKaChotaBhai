@@ -356,8 +356,12 @@ class ConnectionSupervisor(
                 connectionRepository.events.first { it is ConnectionEvent.Connected }
             }
 
+            // Resolve device info first (resets cloned token if hardware mismatch detected)
+            val deviceInfo = deviceRepository.getDeviceInfo()
+            val activeToken = sessionManager.getToken() ?: token
+
             // Authenticate
-            val authResult = authRepository.authenticate(token)
+            val authResult = authRepository.authenticate(activeToken)
             if (authResult.isFailure) {
                 val error = authResult.exceptionOrNull()
                 Log.e(TAG, "Reconnect auth failed: ${error?.message}")
@@ -374,7 +378,6 @@ class ConnectionSupervisor(
             }
 
             // Register
-            val deviceInfo = deviceRepository.getDeviceInfo()
             val registerResult = deviceRepository.register(deviceInfo)
             if (registerResult.isFailure) {
                 Log.e(TAG, "Reconnect register failed: ${registerResult.exceptionOrNull()?.message}")

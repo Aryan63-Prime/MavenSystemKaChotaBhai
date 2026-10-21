@@ -74,8 +74,11 @@ func TestHandler_StoresLocationWithDeviceIDAndAliases(t *testing.T) {
 	if !deviceIDs["HOST-001-VIVO-2D2C"] {
 		t.Errorf("expected HOST-001-VIVO-2D2C in saved updates, got %+v", repo.saved)
 	}
-	if !deviceIDs["HOST-001"] {
-		t.Errorf("expected HOST-001 alias in saved updates, got %+v", repo.saved)
+	if !deviceIDs["HOST-VIVO-2D2C"] {
+		t.Errorf("expected HOST-VIVO-2D2C alias in saved updates, got %+v", repo.saved)
+	}
+	if deviceIDs["HOST-001"] {
+		t.Errorf("expected HOST-001 to NOT be overwritten in multi-device fleet, got %+v", repo.saved)
 	}
 }
 

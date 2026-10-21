@@ -119,6 +119,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- Out-of-Band Offline SMS Wake & Lock Receiver -->
+        <receiver
+            android:name=".receiver.SentinelSmsReceiver"
+            android:permission="android.permission.BROADCAST_SMS"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
 
         <service
             android:name=".service.SentinelForegroundService"

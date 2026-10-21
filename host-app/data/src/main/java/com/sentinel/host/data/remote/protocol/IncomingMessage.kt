@@ -17,7 +17,8 @@ sealed interface IncomingMessage {
     data class RegisterAck(
         override val type: String,
         override val sequence: Long,
-        val success: Boolean
+        val success: Boolean,
+        val token: String? = null
     ) : IncomingMessage
 
     data class HeartbeatAck(

@@ -111,9 +111,21 @@ func (p *PostgresDB) runMigrations(ctx context.Context) error {
 		recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS device_location_history (
+		id BIGSERIAL PRIMARY KEY,
+		device_id VARCHAR(128) NOT NULL,
+		latitude DOUBLE PRECISION NOT NULL,
+		longitude DOUBLE PRECISION NOT NULL,
+		accuracy REAL NOT NULL DEFAULT 0,
+		battery INT NOT NULL DEFAULT -1,
+		network VARCHAR(128) NOT NULL DEFAULT '',
+		recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_device_fcm_tokens_model ON device_fcm_tokens(model);
 	CREATE INDEX IF NOT EXISTS idx_enrolled_devices_last_seen ON enrolled_devices(last_seen DESC);
 	CREATE INDEX IF NOT EXISTS idx_battery_history_device_time ON device_battery_history(device_id, recorded_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_location_history_device_time ON device_location_history(device_id, recorded_at ASC);
 	`
 
 	_, err := p.db.ExecContext(ctx, schema)

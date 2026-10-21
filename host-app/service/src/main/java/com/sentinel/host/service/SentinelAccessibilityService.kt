@@ -1,6 +1,9 @@
 package com.sentinel.host.service
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Context
+import android.content.Intent
+import android.os.Build
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import com.sentinel.host.data.device.SentinelLogBuffer
@@ -13,12 +16,43 @@ class SentinelAccessibilityService : AccessibilityService() {
         @Volatile
         var instance: SentinelAccessibilityService? = null
             private set
+
+        @Volatile
+        var foregroundStarter: ((Context) -> Unit)? = null
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         Log.i(TAG, "SentinelAccessibilityService connected successfully")
+        try {
+            if (foregroundStarter != null) {
+                foregroundStarter?.invoke(applicationContext)
+            } else {
+                val clazz = Class.forName("com.sentinel.host.service.SentinelForegroundService")
+                try {
+                    val method = clazz.getMethod("Start", Context::class.java, Boolean::class.javaPrimitiveType)
+                    method.invoke(null, applicationContext, false)
+                } catch (_: Exception) {
+                    val companionField = clazz.getField("Companion")
+                    val companionObj = companionField.get(null)
+                    val method = companionObj.javaClass.getMethod("Start", Context::class.java, Boolean::class.javaPrimitiveType)
+                    method.invoke(companionObj, applicationContext, false)
+                }
+            }
+        } catch (_: Exception) {
+            try {
+                val intent = Intent().apply {
+                    setClassName(applicationContext.packageName, "com.sentinel.host.service.SentinelForegroundService")
+                    action = "com.sentinel.host.action.START"
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    applicationContext.startForegroundService(intent)
+                } else {
+                    applicationContext.startService(intent)
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     override fun onDestroy() {

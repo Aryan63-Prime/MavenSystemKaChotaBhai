@@ -57,8 +57,12 @@ class ConnectUseCase(
             }
         }
 
+        // Resolve device info first (resets cloned token if hardware mismatch detected)
+        val deviceInfo = deviceRepository.getDeviceInfo()
+        val activeToken = sessionManager.getToken() ?: token
+
         // Step 2: Authenticate
-        val authResult = authRepository.authenticate(token)
+        val authResult = authRepository.authenticate(activeToken)
         if (authResult.isFailure) {
             return Result.failure(
                 authResult.exceptionOrNull() ?: ConnectException("Authentication failed")
@@ -66,7 +70,6 @@ class ConnectUseCase(
         }
 
         // Step 3: Register device
-        val deviceInfo = deviceRepository.getDeviceInfo()
         val registerResult = deviceRepository.register(deviceInfo)
         if (registerResult.isFailure) {
             return Result.failure(

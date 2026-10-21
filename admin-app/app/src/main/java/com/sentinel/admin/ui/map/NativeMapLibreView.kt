@@ -73,6 +73,12 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
+import org.maplibre.android.style.layers.LineLayer
+import org.maplibre.android.style.layers.Property
+import org.maplibre.android.style.layers.PropertyFactory
+import org.maplibre.android.style.sources.GeoJsonSource
+import org.maplibre.geojson.LineString
+import org.maplibre.geojson.Point
 
 /**
  * State machine representing native MapLibre style lifecycle.
@@ -173,6 +179,7 @@ fun NativeMapLibreView(
     deviceName: String = "Device",
     isOnline: Boolean = true,
     config: MapProviderConfig = defaultMapProvider,
+    routeCoordinates: List<Pair<Double, Double>> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     if (!isValidCoordinate(latitude, longitude)) {
@@ -306,12 +313,13 @@ fun NativeMapLibreView(
         val attempt = styleOwner.begin()
         styleState = MapStyleState.Loading
 
-        map.setStyle(config.styleUrl) {
+        map.setStyle(config.styleUrl) { style ->
             if (styleOwner.finish(attempt) && !isDisposed) {
                 styleState = MapStyleState.Ready
                 map.clear()
                 markerInstance = null
                 renderLatestMarker(map)
+                updateRoutePolyline(style, routeCoordinates)
             }
         }
 
@@ -320,6 +328,16 @@ fun NativeMapLibreView(
         if (styleOwner.isCurrent(attempt) && !isDisposed && styleState is MapStyleState.Loading) {
             if (styleOwner.finish(attempt)) {
                 styleState = MapStyleState.Error(lastAdvisoryError ?: "Tile request timed out. Please check network connection.")
+            }
+        }
+    }
+
+    // Dynamic Route Polyline sync
+    LaunchedEffect(routeCoordinates, maplibreMapInstance, styleState) {
+        val map = maplibreMapInstance ?: return@LaunchedEffect
+        if (styleState is MapStyleState.Ready) {
+            map.getStyle { style ->
+                updateRoutePolyline(style, routeCoordinates)
             }
         }
     }
@@ -630,10 +648,13 @@ fun NativeFleetMapLibreView(
         val attempt = styleOwner.begin()
         styleState = MapStyleState.Loading
 
-        map.setStyle(config.styleUrl) {
+        map.setStyle(config.styleUrl) { style ->
             if (styleOwner.finish(attempt) && !isDisposed) {
                 styleState = MapStyleState.Ready
                 rebuildFleetMarkers(map)
+                if (validMarkers.size >= 2) {
+                    updateRoutePolyline(style, validMarkers.map { it.latitude to it.longitude })
+                }
                 if (cameraInitializationComplete && isFollowing) {
                     frameFleetBounds(map, animate = false)
                 }
@@ -654,6 +675,13 @@ fun NativeFleetMapLibreView(
         val map = maplibreMapInstance ?: return@LaunchedEffect
         if (styleState is MapStyleState.Ready) {
             rebuildFleetMarkers(map)
+            map.getStyle { style ->
+                if (validMarkers.size >= 2) {
+                    updateRoutePolyline(style, validMarkers.map { it.latitude to it.longitude })
+                } else {
+                    updateRoutePolyline(style, emptyList())
+                }
+            }
             if (cameraInitializationComplete && isFollowing) {
                 frameFleetBounds(map, animate = true)
             }
@@ -1002,5 +1030,51 @@ private fun InvalidCoordinatesCard(
                 )
             }
         }
+    }
+}
+
+private const val ROUTE_SOURCE_ID = "sentinel-route-source"
+private const val ROUTE_LAYER_ID = "sentinel-route-layer"
+
+private fun updateRoutePolyline(style: org.maplibre.android.maps.Style?, coords: List<Pair<Double, Double>>) {
+    if (style == null || !style.isFullyLoaded) return
+    try {
+        if (coords.size < 2) {
+            if (style.getLayer(ROUTE_LAYER_ID) != null) {
+                style.removeLayer(ROUTE_LAYER_ID)
+            }
+            if (style.getSource(ROUTE_SOURCE_ID) != null) {
+                style.removeSource(ROUTE_SOURCE_ID)
+            }
+            return
+        }
+
+        val points = coords.map { (lat, lon) ->
+            Point.fromLngLat(lon, lat)
+        }
+        val lineString = LineString.fromLngLats(points)
+
+        val existingSource = style.getSourceAs<GeoJsonSource>(ROUTE_SOURCE_ID)
+        if (existingSource != null) {
+            existingSource.setGeoJson(lineString)
+        } else {
+            val source = GeoJsonSource(ROUTE_SOURCE_ID, lineString)
+            style.addSource(source)
+        }
+
+        if (style.getLayer(ROUTE_LAYER_ID) == null) {
+            val lineLayer = LineLayer(ROUTE_LAYER_ID, ROUTE_SOURCE_ID).apply {
+                setProperties(
+                    PropertyFactory.lineColor(android.graphics.Color.parseColor("#38BDF8")),
+                    PropertyFactory.lineWidth(3.5f),
+                    PropertyFactory.lineOpacity(0.85f),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                )
+            }
+            style.addLayer(lineLayer)
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("Sentinel:MapLibre", "Failed to render route polyline: ${e.message}")
     }
 }

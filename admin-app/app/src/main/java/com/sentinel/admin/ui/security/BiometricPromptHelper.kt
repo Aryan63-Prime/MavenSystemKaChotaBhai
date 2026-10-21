@@ -40,4 +40,27 @@ object BiometricPromptHelper {
 
         prompt.authenticate(promptInfo)
     }
+
+    fun authenticateIfAvailable(
+        context: android.content.Context,
+        title: String = "Authorize Critical Command",
+        subtitle: String = "Verify identity to execute high-privilege operation",
+        onAuthorized: () -> Unit
+    ) {
+        val activity = context as? FragmentActivity
+        if (activity != null) {
+            val canAuth = try {
+                BiometricManager.from(context).canAuthenticate(
+                    BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                ) == BiometricManager.BIOMETRIC_SUCCESS
+            } catch (_: Exception) {
+                false
+            }
+            if (canAuth) {
+                authenticate(activity, title, subtitle, onSuccess = onAuthorized, onError = {})
+                return
+            }
+        }
+        onAuthorized()
+    }
 }

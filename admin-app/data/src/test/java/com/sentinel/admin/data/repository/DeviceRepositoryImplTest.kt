@@ -282,10 +282,10 @@ class DeviceRepositoryImplTest {
 
         val devices = repo.getDevices().getOrThrow()
         assertEquals(2, devices.size)
-        assertEquals("HOST-01", devices[0].callsign)
-        assertEquals("HOST-02", devices[1].callsign)
-        assertEquals("HOST-01", devices[0].displayId)
-        assertEquals("HOST-02", devices[1].displayId)
+        assertEquals("HOST001", devices[0].callsign)
+        assertEquals("HOST002", devices[1].callsign)
+        assertEquals("HOST001", devices[0].displayId)
+        assertEquals("HOST002", devices[1].displayId)
     }
 
     // ============================================================

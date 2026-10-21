@@ -42,6 +42,19 @@ class FallDetector @Inject constructor(
     /** Controls whether local strobe and siren fire on emergency. Disabled by default. */
     var soundLocalAlarm = false
 
+    @Volatile
+    var currentAccelerationG: Float = 1.0f
+
+    @Volatile
+    var microVibrationMg: Int = 0
+
+    @Volatile
+    var seismicState: String = "DEAD STILL"
+
+    private val recentGWindow = FloatArray(10)
+    private var windowIndex = 0
+    private var windowCount = 0
+
     private var freeFallTimestamp: Long = 0L
     private var impactDetected = false
     private var peakGForce = 0f
@@ -90,13 +103,39 @@ class FallDetector @Inject constructor(
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (!isEnabled || event == null || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+        if (event == null || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
 
         val x = event.values[0]
         val y = event.values[1]
         val z = event.values[2]
 
         val magnitude = sqrt((x * x + y * y + z * z).toDouble()).toFloat()
+        currentAccelerationG = magnitude / 9.80665f
+
+        recentGWindow[windowIndex] = currentAccelerationG
+        windowIndex = (windowIndex + 1) % recentGWindow.size
+        if (windowCount < recentGWindow.size) windowCount++
+
+        if (windowCount >= 3) {
+            var minG = recentGWindow[0]
+            var maxG = recentGWindow[0]
+            for (i in 1 until windowCount) {
+                val g = recentGWindow[i]
+                if (g < minG) minG = g
+                if (g > maxG) maxG = g
+            }
+            val deltaMg = ((maxG - minG) * 1000f).toInt()
+            microVibrationMg = deltaMg
+            seismicState = when {
+                deltaMg < 5 -> "DEAD STILL"
+                deltaMg <= 25 -> "MICRO-TREMOR (SURFACE/STEPS)"
+                deltaMg <= 90 -> "VEHICLE / ENGINE VIBRATION"
+                else -> "ACTIVE HANDLING"
+            }
+        }
+
+        if (!isEnabled) return
+
         val now = System.currentTimeMillis()
 
         // If currently in stillness verification, any significant motion cancels the alert

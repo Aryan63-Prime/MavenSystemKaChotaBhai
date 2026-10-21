@@ -42,4 +42,14 @@ interface DeviceRepository {
 
     /** Dispatches a high-priority FCM push to wake a sleeping host device. */
     suspend fun wakeDevice(deviceId: String): Result<Boolean>
+
+    /** Fetches historical breadcrumb points recorded for a given device. */
+    suspend fun getRouteHistory(
+        deviceId: String,
+        start: String? = null,
+        end: String? = null
+    ): Result<List<com.sentinel.admin.domain.model.DeviceLocation>> = Result.success(emptyList())
+
+    /** Fetches historical battery percentage points for sparkline visualization. */
+    suspend fun getBatteryHistory(deviceId: String): Result<List<Int>> = Result.success(emptyList())
 }

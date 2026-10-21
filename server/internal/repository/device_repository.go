@@ -48,6 +48,8 @@ type DeviceRepository interface {
 	ListEnrolledDevices(ctx context.Context) ([]EnrolledDevice, error)
 	SaveBatteryHistory(ctx context.Context, entry BatteryHistoryEntry) error
 	GetBatteryHistory(ctx context.Context, deviceID string, limit int) ([]BatteryHistoryEntry, error)
+	SaveLocationHistory(ctx context.Context, loc Location) error
+	GetLocationHistory(ctx context.Context, deviceID string, from, to time.Time, limit int) ([]Location, error)
 }
 
 // PostgresDeviceRepository implements DeviceRepository backed by PostgreSQL.
@@ -303,20 +305,89 @@ func (r *PostgresDeviceRepository) GetBatteryHistory(ctx context.Context, device
 	return entries, rows.Err()
 }
 
+// SaveLocationHistory inserts a breadcrumb into device_location_history.
+func (r *PostgresDeviceRepository) SaveLocationHistory(ctx context.Context, loc Location) error {
+	loc.DeviceID = strings.TrimSpace(loc.DeviceID)
+	if loc.DeviceID == "" {
+		return errors.New("empty device id")
+	}
+	if loc.RecordedAt.IsZero() {
+		loc.RecordedAt = time.Now().UTC()
+	}
+
+	query := `
+	INSERT INTO device_location_history (device_id, latitude, longitude, accuracy, battery, network, recorded_at)
+	VALUES ($1, $2, $3, $4, $5, $6, $7);
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		loc.DeviceID, loc.Latitude, loc.Longitude,
+		loc.Accuracy, loc.Battery, loc.Network, loc.RecordedAt,
+	)
+	return err
+}
+
+// GetLocationHistory retrieves chronological location breadcrumbs between from and to.
+func (r *PostgresDeviceRepository) GetLocationHistory(ctx context.Context, deviceID string, from, to time.Time, limit int) ([]Location, error) {
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return nil, errors.New("empty device id")
+	}
+	if limit <= 0 || limit > 5000 {
+		limit = 2000
+	}
+	if from.IsZero() {
+		from = time.Now().UTC().Add(-24 * time.Hour)
+	}
+	if to.IsZero() {
+		to = time.Now().UTC().Add(time.Hour)
+	}
+
+	query := `
+	SELECT device_id, latitude, longitude, accuracy, battery, network, recorded_at
+	FROM device_location_history
+	WHERE device_id = $1 AND recorded_at >= $2 AND recorded_at <= $3
+	ORDER BY recorded_at ASC
+	LIMIT $4;
+	`
+	rows, err := r.db.QueryContext(ctx, query, deviceID, from, to, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var locations []Location
+	for rows.Next() {
+		var l Location
+		if err := rows.Scan(
+			&l.DeviceID, &l.Latitude, &l.Longitude,
+			&l.Accuracy, &l.Battery, &l.Network, &l.RecordedAt,
+		); err != nil {
+			return nil, err
+		}
+		locations = append(locations, l)
+	}
+	if locations == nil {
+		locations = []Location{}
+	}
+	return locations, rows.Err()
+}
+
 // MemoryDeviceRepository provides an in-memory thread-safe implementation of DeviceRepository.
 type MemoryDeviceRepository struct {
-	mu             sync.RWMutex
-	tokens         map[string]string                 // device_id -> token
-	devices        map[string]EnrolledDevice         // device_id -> EnrolledDevice
-	batteryHistory map[string][]BatteryHistoryEntry // device_id -> entries
+	mu              sync.RWMutex
+	tokens          map[string]string                 // device_id -> token
+	devices         map[string]EnrolledDevice         // device_id -> EnrolledDevice
+	batteryHistory  map[string][]BatteryHistoryEntry // device_id -> entries
+	locationHistory map[string][]Location            // device_id -> locations
 }
 
 // NewMemoryDeviceRepository creates a new in-memory DeviceRepository.
 func NewMemoryDeviceRepository() *MemoryDeviceRepository {
 	return &MemoryDeviceRepository{
-		tokens:         make(map[string]string),
-		devices:        make(map[string]EnrolledDevice),
-		batteryHistory: make(map[string][]BatteryHistoryEntry),
+		tokens:          make(map[string]string),
+		devices:         make(map[string]EnrolledDevice),
+		batteryHistory:  make(map[string][]BatteryHistoryEntry),
+		locationHistory: make(map[string][]Location),
 	}
 }
 
@@ -476,5 +547,61 @@ func (m *MemoryDeviceRepository) GetBatteryHistory(ctx context.Context, deviceID
 	}
 	res := make([]BatteryHistoryEntry, limit)
 	copy(res, history[:limit])
+	return res, nil
+}
+
+func (m *MemoryDeviceRepository) SaveLocationHistory(ctx context.Context, loc Location) error {
+	_ = ctx
+	loc.DeviceID = strings.TrimSpace(loc.DeviceID)
+	if loc.DeviceID == "" {
+		return errors.New("empty device id")
+	}
+	if loc.RecordedAt.IsZero() {
+		loc.RecordedAt = time.Now().UTC()
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.locationHistory[loc.DeviceID] = append(m.locationHistory[loc.DeviceID], loc)
+	return nil
+}
+
+func (m *MemoryDeviceRepository) GetLocationHistory(ctx context.Context, deviceID string, from, to time.Time, limit int) ([]Location, error) {
+	_ = ctx
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID == "" {
+		return nil, errors.New("empty device id")
+	}
+	if limit <= 0 || limit > 5000 {
+		limit = 2000
+	}
+	if from.IsZero() {
+		from = time.Now().UTC().Add(-24 * time.Hour)
+	}
+	if to.IsZero() {
+		to = time.Now().UTC().Add(time.Hour)
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	history, ok := m.locationHistory[deviceID]
+	if !ok || len(history) == 0 {
+		return []Location{}, nil
+	}
+
+	var res []Location
+	for _, loc := range history {
+		if !loc.RecordedAt.Before(from) && !loc.RecordedAt.After(to) {
+			res = append(res, loc)
+			if len(res) >= limit {
+				break
+			}
+		}
+	}
+	if res == nil {
+		res = []Location{}
+	}
 	return res, nil
 }

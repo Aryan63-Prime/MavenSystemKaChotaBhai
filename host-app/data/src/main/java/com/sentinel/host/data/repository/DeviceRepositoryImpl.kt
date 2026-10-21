@@ -48,7 +48,12 @@ class DeviceRepositoryImpl(
                     event is ConnectionEvent.Registered || event is ConnectionEvent.Error
                 }
                 when (event) {
-                    is ConnectionEvent.Registered -> Result.success(true)
+                    is ConnectionEvent.Registered -> {
+                        event.token?.takeIf { it.isNotBlank() }?.let { newToken ->
+                            sessionManager.saveToken(newToken)
+                        }
+                        Result.success(true)
+                    }
                     is ConnectionEvent.Error -> Result.failure(
                         RegistrationException(event.code, event.message)
                     )
@@ -67,22 +72,31 @@ class DeviceRepositoryImpl(
         val brand = hw?.brand ?: Build.BRAND ?: manufacturer
         val model = hw?.model ?: Build.MODEL ?: "Unknown"
         val callsign = hw?.hardwareCallsign ?: run {
-            val rawId = Build.SERIAL?.takeIf { it != Build.UNKNOWN } ?: "0001"
-            val shortId = rawId.takeLast(4).uppercase()
+            val rawSerial = Build.SERIAL?.takeIf { !it.equals(Build.UNKNOWN, ignoreCase = true) && it.isNotBlank() }
+            val shortId = rawSerial?.takeLast(4)?.uppercase()?.padStart(4, '0')
+                ?: (Build.FINGERPRINT + Build.MODEL + Build.BOARD + Build.DEVICE)
+                    .hashCode().toUInt().toString(16).uppercase().padStart(4, '0').takeLast(4)
             val oem = manufacturer.uppercase().filter { it.isLetter() }.take(4).ifBlank { "UNIT" }
             "HOST-$oem-$shortId"
         }
 
         // Use the hardware callsign (e.g. HOST-VIVO-2D2C) as the distinct deviceId.
         // If a custom non-generic token is provisioned (not HOST-001), use that instead.
+        val hwDeviceId = "HOST-001-${callsign.removePrefix("HOST-")}"
         val jwtDeviceId = extractDeviceIdFromToken()
         val deviceId = if (!jwtDeviceId.isNullOrBlank() && jwtDeviceId != "HOST-001") {
-            jwtDeviceId
+            if (jwtDeviceId.startsWith("HOST-001-") && jwtDeviceId != hwDeviceId) {
+                // The saved JWT belonged to a cloned device identity; prioritize this hardware's real ID
+                // and reset the cloned token back to default bootstrap token
+                try {
+                    sessionManager.saveToken(com.sentinel.host.data.session.SessionManagerImpl.DEFAULT_JWT_TOKEN)
+                } catch (_: Exception) {}
+                hwDeviceId
+            } else {
+                jwtDeviceId
+            }
         } else {
-            // Prefix with "HOST-001-" so server authorization mismatch check passes,
-            // while ensuring a distinct hardware identity (e.g. HOST-001-VIVO-2D2C).
-            val suffix = callsign.removePrefix("HOST-")
-            "HOST-001-$suffix"
+            hwDeviceId
         }
 
         // Hardware-level device name: e.g. "Vivo I2401 (HOST-VIVO-CFAE)"

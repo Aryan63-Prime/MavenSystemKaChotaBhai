@@ -31,6 +31,7 @@ type Service struct {
 	listeners     ListenerRepository
 	forwarder     FrameForwarder
 	activeStreams map[string]uuid.UUID
+	adminToDevice map[string]string
 }
 
 // NewService creates an audio service.
@@ -39,6 +40,7 @@ func NewService(listeners ListenerRepository, forwarder FrameForwarder) *Service
 		listeners:     listeners,
 		forwarder:     forwarder,
 		activeStreams: make(map[string]uuid.UUID),
+		adminToDevice: make(map[string]string),
 	}
 }
 
@@ -83,6 +85,18 @@ func (s *Service) StartListening(ctx context.Context, adminConnectionID string, 
 			return fmt.Errorf("start listening: device %s already has active listener %s", cleanTarget, currentListener)
 		}
 	}
+
+	// Synchronously unsubscribe admin from any previous target to prevent Opus packet interleaving
+	if s.adminToDevice == nil {
+		s.adminToDevice = make(map[string]string)
+	}
+	if oldTarget, exists := s.adminToDevice[adminConnectionID]; exists && oldTarget != cleanTarget {
+		_ = s.listeners.RemoveListener(ctx, oldTarget)
+		if s.activeStreams != nil {
+			delete(s.activeStreams, oldTarget)
+		}
+	}
+	s.adminToDevice[adminConnectionID] = cleanTarget
 
 	if err := s.listeners.SetListener(ctx, cleanTarget, adminConnectionID); err != nil {
 		return err
@@ -139,6 +153,9 @@ func (s *Service) StopListening(ctx context.Context, adminConnectionID string, t
 
 	if s.activeStreams != nil {
 		delete(s.activeStreams, cleanTarget)
+	}
+	if s.adminToDevice != nil {
+		delete(s.adminToDevice, adminConnectionID)
 	}
 
 	return s.listeners.RemoveListener(ctx, cleanTarget)

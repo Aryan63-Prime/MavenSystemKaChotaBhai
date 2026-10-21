@@ -10,7 +10,11 @@ package com.sentinel.host.domain.model
 sealed interface ConnectionEvent {
     data object Connected : ConnectionEvent
     data object Authenticated : ConnectionEvent
-    data object Registered : ConnectionEvent
+    open class Registered(val token: String? = null) : ConnectionEvent {
+        companion object : Registered(null)
+        override fun equals(other: Any?): Boolean = other is Registered
+        override fun hashCode(): Int = Registered::class.hashCode()
+    }
     data object HeartbeatAck : ConnectionEvent
     data class Error(val code: Int, val message: String) : ConnectionEvent
     data object Disconnected : ConnectionEvent

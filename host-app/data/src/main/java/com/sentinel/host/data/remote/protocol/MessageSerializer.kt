@@ -105,7 +105,8 @@ class MessageSerializer(private val moshi: Moshi = Moshi.Builder().build()) {
                 IncomingMessage.RegisterAck(
                     type = envelope.type,
                     sequence = envelope.sequence,
-                    success = msg?.data?.success ?: false
+                    success = msg?.data?.success ?: false,
+                    token = msg?.data?.token
                 )
             }
 

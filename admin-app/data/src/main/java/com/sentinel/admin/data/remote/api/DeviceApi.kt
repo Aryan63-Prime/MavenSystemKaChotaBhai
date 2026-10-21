@@ -4,6 +4,7 @@ import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Header
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * Retrofit API interface for device endpoints.
@@ -38,4 +39,24 @@ interface DeviceApi {
         @Header("Authorization") authorization: String,
         @Path("deviceId") deviceId: String
     ): WakeResponseDto
+
+    /**
+     * GET /devices/{deviceId}/route — Returns historical breadcrumb route points.
+     */
+    @GET("/devices/{deviceId}/route")
+    suspend fun getRouteHistory(
+        @Header("Authorization") authorization: String,
+        @Path("deviceId") deviceId: String,
+        @Query("start") start: String? = null,
+        @Query("end") end: String? = null
+    ): RouteHistoryResponse
+
+    /**
+     * GET /devices/{deviceId}/battery-history — Returns historical battery and thermal telemetry.
+     */
+    @GET("/devices/{deviceId}/battery-history")
+    suspend fun getBatteryHistory(
+        @Header("Authorization") authorization: String,
+        @Path("deviceId") deviceId: String
+    ): BatteryHistoryResponse
 }

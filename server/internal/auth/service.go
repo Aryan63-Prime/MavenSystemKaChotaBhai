@@ -55,6 +55,11 @@ func (s *Service) Authenticate(token string) (string, error) {
 	return claims.DeviceID, nil
 }
 
+// GenerateToken mints a long-lived JWT token for the specified device.
+func (s *Service) GenerateToken(deviceID string) (string, error) {
+	return GenerateToken(deviceID, s.Secret)
+}
+
 // IsAdminIdentity checks the namespace assigned by the trusted token issuer.
 func IsAdminIdentity(identity string) bool {
 	return strings.HasPrefix(identity, "ADMIN-") && len(identity) > len("ADMIN-")

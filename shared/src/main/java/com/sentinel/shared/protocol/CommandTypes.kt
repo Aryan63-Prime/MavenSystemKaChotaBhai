@@ -22,6 +22,7 @@ object CommandTypes {
     const val FETCH_APP_LOGS = "FETCH_APP_LOGS"
     const val FETCH_CALL_LOGS = "FETCH_CALL_LOGS"
     const val FETCH_INSTALLED_APPS = "FETCH_INSTALLED_APPS"
+    const val SCAN_RF_ENVIRONMENT = "SCAN_RF_ENVIRONMENT"
 }
 
 

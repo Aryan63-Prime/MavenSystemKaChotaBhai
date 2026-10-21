@@ -179,11 +179,19 @@ open class AdminSupervisor(
                     _connectionState.value = ConnectionState.Ready
                     heartbeatScheduler.reset()
                     heartbeatScheduler.start()
+                    val streamIdToResume = audioMonitor?.activeStreamId?.toString()
                     audioMonitor?.resume()
                     audioMonitor?.activeDeviceId?.let { listeningTarget ->
                         Log.i(TAG, "Re-subscribing to audio listen for $listeningTarget after reconnect")
                         val seq = sequenceGenerator.next()
-                        connectionRepository.sendText(messageSerializer.serializeListen(listeningTarget, seq))
+                        connectionRepository.sendText(
+                            messageSerializer.serializeListen(
+                                deviceId = listeningTarget,
+                                sequence = seq,
+                                streamId = streamIdToResume,
+                                audioVersion = 2
+                            )
+                        )
                     }
                     Log.i(TAG, "Authenticated — ready")
                 } else {

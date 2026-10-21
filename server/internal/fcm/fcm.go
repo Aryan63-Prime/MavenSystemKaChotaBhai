@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -142,12 +144,42 @@ func (s *Service) RegisterToken(ctx context.Context, deviceID, fcmToken string) 
 	return nil
 }
 
-// GetToken returns the registered FCM token for a device ID using strict exact matching and version-guarded recovery.
-func (s *Service) GetToken(deviceID string) (string, bool) {
-	if deviceID == "" {
-		return "", false
+var hostSeqRegex = regexp.MustCompile(`^HOST\d+-`)
+
+func (s *Service) resolveAliasCandidates(deviceID string) []string {
+	var candidates []string
+
+	// 1. If strings.HasPrefix(deviceID, "HOST-") && !strings.HasPrefix(deviceID, "HOST-001-") -> try "HOST-001-" + strings.TrimPrefix(deviceID, "HOST-")
+	if strings.HasPrefix(deviceID, "HOST-") && !strings.HasPrefix(deviceID, "HOST-001-") {
+		candidates = append(candidates, "HOST-001-"+strings.TrimPrefix(deviceID, "HOST-"))
 	}
 
+	// 2. Match Regex("^HOST\\d+-") (e.g. HOST002-VIVO-CFAE -> "HOST-001-VIVO-CFAE")
+	if hostSeqRegex.MatchString(deviceID) {
+		suffix := hostSeqRegex.ReplaceAllString(deviceID, "")
+		candidates = append(candidates, "HOST-001-"+suffix, "HOST-"+suffix)
+	}
+
+	// 3. If strings.HasPrefix(deviceID, "HOST-001-") -> try "HOST-" + strings.TrimPrefix(deviceID, "HOST-001-")
+	if strings.HasPrefix(deviceID, "HOST-001-") {
+		candidates = append(candidates, "HOST-"+strings.TrimPrefix(deviceID, "HOST-001-"))
+	}
+
+	// 4. If strings.Contains(deviceID, "_") -> try strings.SplitN(deviceID, "_", 2)[0] (when not "HOST-001")
+	if strings.Contains(deviceID, "_") {
+		base := strings.SplitN(deviceID, "_", 2)[0]
+		if base != "" && base != "HOST-001" {
+			candidates = append(candidates, base)
+			if strings.HasPrefix(base, "HOST-") && !strings.HasPrefix(base, "HOST-001-") {
+				candidates = append(candidates, "HOST-001-"+strings.TrimPrefix(base, "HOST-"))
+			}
+		}
+	}
+
+	return candidates
+}
+
+func (s *Service) lookupToken(deviceID string) (string, bool) {
 	s.tokenLock.RLock()
 	t, ok := s.tokens[deviceID]
 	store := s.tokenStore
@@ -191,6 +223,27 @@ func (s *Service) GetToken(deviceID string) (string, bool) {
 			}
 			s.tokenLock.Unlock()
 			return tok, ok
+		}
+	}
+
+	return "", false
+}
+
+// GetToken returns the registered FCM token for a device ID using strict exact matching and version-guarded recovery.
+func (s *Service) GetToken(deviceID string) (string, bool) {
+	if deviceID == "" {
+		return "", false
+	}
+
+	if tok, ok := s.lookupToken(deviceID); ok && tok != "" {
+		return tok, true
+	}
+
+	for _, cand := range s.resolveAliasCandidates(deviceID) {
+		if cand != "" && cand != deviceID {
+			if tok, ok := s.lookupToken(cand); ok && tok != "" {
+				return tok, true
+			}
 		}
 	}
 

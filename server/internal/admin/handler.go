@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/xaiop/project-sentinel/server/internal/auth"
 )
@@ -53,7 +54,7 @@ func (h *Handler) ListDevices(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ListDevicesResponse{Devices: devices})
 }
 
-// RouteDevice routes /devices/{deviceId}, /devices/{deviceId}/wake, or /devices/{deviceId}/battery-history.
+// RouteDevice routes /devices/{deviceId}, /devices/{deviceId}/wake, /devices/{deviceId}/battery-history, or /devices/{deviceId}/route.
 func (h *Handler) RouteDevice(w http.ResponseWriter, r *http.Request) {
 	if strings.HasSuffix(r.URL.Path, "/wake") {
 		h.WakeDevice(w, r)
@@ -63,7 +64,57 @@ func (h *Handler) RouteDevice(w http.ResponseWriter, r *http.Request) {
 		h.GetBatteryHistory(w, r)
 		return
 	}
+	if strings.HasSuffix(r.URL.Path, "/route") {
+		h.GetRouteHistory(w, r)
+		return
+	}
 	h.GetDevice(w, r)
+}
+
+// GetRouteHistory handles GET /devices/{deviceId}/route.
+func (h *Handler) GetRouteHistory(w http.ResponseWriter, r *http.Request) {
+	if !h.allowGET(w, r) || !h.authorize(w, r) {
+		return
+	}
+
+	trimmed := strings.TrimPrefix(r.URL.Path, "/devices/")
+	trimmed = strings.TrimSuffix(trimmed, "/route")
+	deviceID, err := url.PathUnescape(trimmed)
+	if err != nil || strings.TrimSpace(deviceID) == "" || strings.Contains(deviceID, "/") {
+		writeError(w, http.StatusBadRequest, "Invalid device ID in path")
+		return
+	}
+
+	now := time.Now().UTC()
+	from := now.Add(-24 * time.Hour)
+	to := now.Add(time.Hour)
+
+	if startStr := strings.TrimSpace(r.URL.Query().Get("start")); startStr != "" {
+		if t, err := time.Parse(time.RFC3339, startStr); err == nil {
+			from = t.UTC()
+		} else if t, err := time.Parse("2006-01-02", startStr); err == nil {
+			from = t.UTC()
+		}
+	}
+
+	if endStr := strings.TrimSpace(r.URL.Query().Get("end")); endStr != "" {
+		if t, err := time.Parse(time.RFC3339, endStr); err == nil {
+			to = t.UTC()
+		} else if t, err := time.Parse("2006-01-02", endStr); err == nil {
+			to = t.Add(24*time.Hour - time.Nanosecond).UTC()
+		}
+	}
+
+	points, err := h.service.GetLocationHistory(r.Context(), deviceID, from, to, 2000)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deviceId": deviceID,
+		"points":   points,
+	})
 }
 
 // GetBatteryHistory handles GET /devices/{deviceId}/battery-history.

@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -36,4 +37,21 @@ func Validate(tokenString string, secret string) (*Claims, error) {
 	}
 
 	return claims, nil
+}
+
+// GenerateToken mints a signed HS256 JWT for a device with 10-year validity.
+func GenerateToken(deviceID string, secret string) (string, error) {
+	now := time.Now()
+	claims := Claims{
+		DeviceID: deviceID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(now),
+			ExpiresAt: jwt.NewNumericDate(now.AddDate(10, 0, 0)),
+			Subject:   deviceID,
+			Issuer:    "project-sentinel",
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(secret))
 }

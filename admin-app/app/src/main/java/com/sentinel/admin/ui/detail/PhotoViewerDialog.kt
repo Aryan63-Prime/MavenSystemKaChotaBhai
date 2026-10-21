@@ -1,7 +1,13 @@
 package com.sentinel.admin.ui.detail
 
+import android.content.ContentValues
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Base64
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -22,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -36,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -48,10 +56,11 @@ fun PhotoViewerDialog(
     onDismiss: () -> Unit,
     onSwitchCamera: (useFront: Boolean) -> Unit = {}
 ) {
+    val context = LocalContext.current
     val bitmap = remember(imageBase64) {
         try {
             val bytes = Base64.decode(imageBase64, Base64.DEFAULT)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            decodeSubsampledBitmap(bytes, 2048)
         } catch (_: Exception) {
             null
         }
@@ -105,6 +114,21 @@ fun PhotoViewerDialog(
                         color = Color.White,
                         modifier = Modifier.weight(1f)
                     )
+
+                    IconButton(
+                        onClick = {
+                            if (bitmap != null) {
+                                saveBitmapToGallery(context, bitmap)
+                                Toast.makeText(context, "Saved photo to Gallery", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.SaveAlt,
+                            contentDescription = "Save to Gallery",
+                            tint = Color.White
+                        )
+                    }
 
                     IconButton(onClick = onDismiss) {
                         Icon(
@@ -180,6 +204,52 @@ fun PhotoViewerDialog(
                     }
                 }
             }
+        }
+    }
+}
+
+private fun decodeSubsampledBitmap(bytes: ByteArray, maxEdge: Int = 2048): Bitmap? {
+    val boundsOptions = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOptions)
+    val width = boundsOptions.outWidth
+    val height = boundsOptions.outHeight
+    var sampleSize = 1
+    if (width > maxEdge || height > maxEdge) {
+        val halfW = width / 2
+        val halfH = height / 2
+        while ((halfW / sampleSize) >= maxEdge || (halfH / sampleSize) >= maxEdge) {
+            sampleSize *= 2
+        }
+    }
+    val decodeOptions = BitmapFactory.Options().apply {
+        inSampleSize = sampleSize.coerceAtLeast(1)
+    }
+    return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOptions)
+}
+
+private fun saveBitmapToGallery(context: android.content.Context, bitmap: Bitmap) {
+    val filename = "Sentinel_Photo_${System.currentTimeMillis()}.jpg"
+    val contentValues = ContentValues().apply {
+        put(MediaStore.MediaColumns.DISPLAY_NAME, filename)
+        put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/Sentinel")
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+    }
+
+    val resolver = context.contentResolver
+    val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
+    uri?.let {
+        resolver.openOutputStream(it)?.use { stream ->
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 95, stream)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            contentValues.clear()
+            contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+            resolver.update(it, contentValues, null, null)
         }
     }
 }

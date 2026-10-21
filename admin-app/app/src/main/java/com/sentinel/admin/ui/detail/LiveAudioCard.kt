@@ -108,6 +108,10 @@ fun LiveAudioCard(
     onPttArmedChange: (Boolean) -> Unit = {},
     isPttTransmitting: Boolean = false,
     pttAudioLevel: Float = 0f,
+    incomingAudioLevel: Float = 0f,
+    incomingAudioDbFs: Int = -60,
+    incomingAudioFreqHz: Int = 0,
+    incomingAcousticClass: String = "QUIET ROOM",
     onPttStart: () -> Unit = {},
     onPttStop: () -> Unit = {},
     isRecording: Boolean = false,
@@ -266,6 +270,10 @@ fun LiveAudioCard(
                 isPttTransmitting = isPttTransmitting,
                 pttAudioLevel = pttAudioLevel,
                 phase = phase,
+                incomingAudioLevel = incomingAudioLevel,
+                incomingAudioDbFs = incomingAudioDbFs,
+                incomingAudioFreqHz = incomingAudioFreqHz,
+                incomingAcousticClass = incomingAcousticClass,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(68.dp)
@@ -640,6 +648,10 @@ private fun WaveformVisualizer(
     isPttTransmitting: Boolean,
     pttAudioLevel: Float,
     phase: Float,
+    incomingAudioLevel: Float = 0f,
+    incomingAudioDbFs: Int = -60,
+    incomingAudioFreqHz: Int = 0,
+    incomingAcousticClass: String = "QUIET ROOM",
     modifier: Modifier = Modifier
 ) {
     val barCount = 46
@@ -681,7 +693,8 @@ private fun WaveformVisualizer(
                         val wave3 = sin(phase * 0.8 + normalizedIdx * 6.0).toFloat()
                         val composite = ((wave1 * 0.45f + wave2 * 0.35f + wave3 * 0.20f) + 1f) / 2f
                         val envelope = sin(normalizedIdx * Math.PI).toFloat()
-                        val heightFraction = (composite * envelope * 0.82f + 0.12f).coerceIn(0.1f, 1.0f)
+                        val liveBoost = if (incomingAudioDbFs > -60) incomingAudioLevel.coerceIn(0.15f, 1.0f) else 1.0f
+                        val heightFraction = (composite * envelope * 0.82f * liveBoost + 0.12f).coerceIn(0.1f, 1.0f)
                         canvasHeight * heightFraction
                     }
                     else -> {
@@ -707,6 +720,7 @@ private fun WaveformVisualizer(
 
         val labelText = when {
             isPttTransmitting -> String.format(Locale.US, "Outgoing audio-level visualization · %.0f%%", pttAudioLevel * 100f)
+            isPlaying && incomingAudioDbFs > -60 -> "Live DSP Stream · $incomingAudioDbFs dBFS · $incomingAudioFreqHz Hz ($incomingAcousticClass)"
             isPlaying -> "Incoming stream (decorative spectrum · measured dBFS unavailable)"
             else -> "Waveform idle"
         }

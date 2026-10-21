@@ -40,6 +40,18 @@ class LocationStreamer(
     @Volatile
     var hasPermission: Boolean = false
 
+    /** Power state for battery-adaptive motion GPS throttling. */
+    @Volatile
+    var currentBatteryPercent: Int = 100
+
+    @Volatile
+    var isDeviceCharging: Boolean = false
+
+    fun updatePowerState(batteryPercent: Int, isCharging: Boolean) {
+        currentBatteryPercent = batteryPercent
+        isDeviceCharging = isCharging
+    }
+
     /** Whether location services are enabled on the device. */
     val isLocationEnabled: Boolean get() = locationProvider.isLocationEnabled()
 
@@ -126,11 +138,20 @@ class LocationStreamer(
         stop() // Clean up any lingering state
 
         motionDetector?.start()
+        deadReckoningEngine?.start()
         observeMotionAndStartUpdates()
 
         collectJob = locationProvider.locations
             .onEach { update -> handleLocationUpdate(update) }
             .launchIn(scope)
+
+        deadReckoningJob = deadReckoningEngine?.estimatedLocation
+            ?.onEach { estimated ->
+                if (estimated != null && deadReckoningEngine.isGpsLost) {
+                    handleLocationUpdate(estimated)
+                }
+            }
+            ?.launchIn(scope)
 
         flushRamBuffer()
 
@@ -157,13 +178,35 @@ class LocationStreamer(
                     }
 
                     MotionState.IN_MOTION -> {
-                        Log.i(TAG, "Adaptive Engine: Device IN_MOTION → Switching to high-precision streaming (5s interval, 10m delta)")
-                        config.copy(
-                            intervalMs = 5_000L,
-                            fastestIntervalMs = 2_000L,
-                            minDistanceMeters = 10f,
-                            priority = 100 // PRIORITY_HIGH_ACCURACY
-                        )
+                        when {
+                            isDeviceCharging || currentBatteryPercent > 30 || currentBatteryPercent < 0 -> {
+                                Log.i(TAG, "Adaptive Engine: Device IN_MOTION (Normal/Charging) → Switching to high-precision streaming (5s interval, 10m delta)")
+                                config.copy(
+                                    intervalMs = 5_000L,
+                                    fastestIntervalMs = 2_000L,
+                                    minDistanceMeters = 10f,
+                                    priority = 100 // PRIORITY_HIGH_ACCURACY
+                                )
+                            }
+                            currentBatteryPercent in 15..30 -> {
+                                Log.i(TAG, "Adaptive Engine: Device IN_MOTION (Battery $currentBatteryPercent%) → Throttling GPS (20s interval, 25m delta)")
+                                config.copy(
+                                    intervalMs = 20_000L,
+                                    fastestIntervalMs = 10_000L,
+                                    minDistanceMeters = 25f,
+                                    priority = 102 // PRIORITY_BALANCED_POWER_ACCURACY
+                                )
+                            }
+                            else -> {
+                                Log.i(TAG, "Adaptive Engine: Device IN_MOTION (Critical Battery $currentBatteryPercent%) → Throttling GPS (60s interval, 50m delta)")
+                                config.copy(
+                                    intervalMs = 60_000L,
+                                    fastestIntervalMs = 30_000L,
+                                    minDistanceMeters = 50f,
+                                    priority = 102 // PRIORITY_BALANCED_POWER_ACCURACY
+                                )
+                            }
+                        }
                     }
                 }
 

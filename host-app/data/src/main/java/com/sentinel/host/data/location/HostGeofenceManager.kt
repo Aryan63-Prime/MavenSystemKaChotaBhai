@@ -32,6 +32,9 @@ class HostGeofenceManager @Inject constructor(
 
     private val geofencingClient: GeofencingClient = LocationServices.getGeofencingClient(context)
 
+    private val activeZones = java.util.concurrent.CopyOnWriteArrayList<GeofenceZone>()
+    private val breachedZoneIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
     private val geofencePendingIntent: PendingIntent by lazy {
         val intent = Intent(context, GeofenceBroadcastReceiver::class.java)
         PendingIntent.getBroadcast(
@@ -45,6 +48,10 @@ class HostGeofenceManager @Inject constructor(
     @SuppressLint("MissingPermission")
     fun registerZones(zones: List<GeofenceZone>, onSuccess: () -> Unit = {}, onError: (String) -> Unit = {}) {
         if (zones.isEmpty()) return
+
+        activeZones.clear()
+        activeZones.addAll(zones)
+        breachedZoneIds.clear()
 
         val geofenceList = zones.map { zone ->
             Geofence.Builder()
@@ -73,8 +80,44 @@ class HostGeofenceManager @Inject constructor(
     }
 
     fun clearAllGeofences() {
+        activeZones.clear()
+        breachedZoneIds.clear()
         geofencingClient.removeGeofences(geofencePendingIntent).addOnCompleteListener {
             Log.i(TAG, "All active geofences removed")
         }
     }
+
+    fun computeDistanceMeters(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Float {
+        return try {
+            val results = FloatArray(1)
+            android.location.Location.distanceBetween(lat1, lon1, lat2, lon2, results)
+            results[0]
+        } catch (_: Throwable) {
+            val r = 6371000.0 // Earth radius in meters
+            val dLat = Math.toRadians(lat2 - lat1)
+            val dLon = Math.toRadians(lon2 - lon1)
+            val a = Math.sin(dLat / 2).let { it * it } +
+                    Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                    Math.sin(dLon / 2).let { it * it }
+            val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+            (r * c).toFloat()
+        }
+    }
+
+    fun evaluateLocationForBreach(latitude: Double, longitude: Double): GeofenceZone? {
+        for (zone in activeZones) {
+            val dist = computeDistanceMeters(latitude, longitude, zone.latitude, zone.longitude)
+            if (dist > zone.radiusMeters) {
+                if (breachedZoneIds.add(zone.id)) {
+                    Log.w(TAG, "Geofence breached! Zone ${zone.id}, dist=$dist > radius=${zone.radiusMeters}")
+                    return zone
+                }
+            } else if (dist < zone.radiusMeters * 0.85f) {
+                breachedZoneIds.remove(zone.id)
+            }
+        }
+        return null
+    }
+
+    fun getActiveZones(): List<GeofenceZone> = activeZones.toList()
 }

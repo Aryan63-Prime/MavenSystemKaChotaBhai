@@ -55,7 +55,8 @@ internal data class LocationDataJson(
 
 @JsonClass(generateAdapter = true)
 internal data class AckDataJson(
-    val success: Boolean = false
+    val success: Boolean = false,
+    val token: String? = null
 )
 
 @JsonClass(generateAdapter = true)

@@ -75,6 +75,7 @@ type EnrolledDeviceSource interface {
 	ListEnrolledDevices(ctx context.Context) ([]repository.EnrolledDevice, error)
 	GetEnrolledDevice(ctx context.Context, deviceID string) (*repository.EnrolledDevice, error)
 	GetBatteryHistory(ctx context.Context, deviceID string, limit int) ([]repository.BatteryHistoryEntry, error)
+	GetLocationHistory(ctx context.Context, deviceID string, from, to time.Time, limit int) ([]repository.Location, error)
 }
 
 // Service builds admin-facing device views from live sessions and Redis state.
@@ -110,7 +111,65 @@ func (s *Service) GetBatteryHistory(ctx context.Context, deviceID string, limit 
 	if s.enrolled == nil {
 		return []repository.BatteryHistoryEntry{}, nil
 	}
-	return s.enrolled.GetBatteryHistory(ctx, deviceID, limit)
+	deviceID = strings.TrimSpace(deviceID)
+	entries, err := s.enrolled.GetBatteryHistory(ctx, deviceID, limit)
+	if err == nil && len(entries) > 0 {
+		return entries, nil
+	}
+
+	if strings.HasPrefix(deviceID, "HOST") && !strings.HasPrefix(deviceID, "HOST-001-") && strings.Contains(deviceID, "-") {
+		suffix := deviceID[strings.Index(deviceID, "-")+1:]
+		longID := "HOST-001-" + suffix
+		if altEntries, altErr := s.enrolled.GetBatteryHistory(ctx, longID, limit); altErr == nil && len(altEntries) > 0 {
+			return altEntries, nil
+		}
+	}
+
+	if strings.Contains(deviceID, "_") {
+		baseID := strings.SplitN(deviceID, "_", 2)[0]
+		if baseID != "HOST-001" && baseID != "" && baseID != deviceID {
+			if altEntries, altErr := s.enrolled.GetBatteryHistory(ctx, baseID, limit); altErr == nil && len(altEntries) > 0 {
+				return altEntries, nil
+			}
+		}
+	}
+
+	return entries, err
+}
+
+// GetLocationHistory returns historical location breadcrumbs for a device.
+func (s *Service) GetLocationHistory(ctx context.Context, deviceID string, from, to time.Time, limit int) ([]repository.Location, error) {
+	if s.enrolled == nil {
+		return []repository.Location{}, nil
+	}
+
+	deviceID = strings.TrimSpace(deviceID)
+	pts, err := s.enrolled.GetLocationHistory(ctx, deviceID, from, to, limit)
+	if err == nil && len(pts) > 0 {
+		return pts, nil
+	}
+
+	if strings.HasPrefix(deviceID, "HOST") && !strings.HasPrefix(deviceID, "HOST-001-") && strings.Contains(deviceID, "-") {
+		suffix := deviceID[strings.Index(deviceID, "-")+1:]
+		longID := "HOST-001-" + suffix
+		if altPts, altErr := s.enrolled.GetLocationHistory(ctx, longID, from, to, limit); altErr == nil && len(altPts) > 0 {
+			return altPts, nil
+		}
+	}
+
+	if strings.Contains(deviceID, "_") {
+		baseID := strings.SplitN(deviceID, "_", 2)[0]
+		if baseID != "HOST-001" && baseID != "" && baseID != deviceID {
+			if altPts, altErr := s.enrolled.GetLocationHistory(ctx, baseID, from, to, limit); altErr == nil && len(altPts) > 0 {
+				return altPts, nil
+			}
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	return []repository.Location{}, nil
 }
 
 // WakeDevice sends a high-priority FCM wakeup ping to the device.
@@ -119,6 +178,20 @@ func (s *Service) WakeDevice(ctx context.Context, deviceID string) (string, erro
 		return "", errors.New("fcm service not configured")
 	}
 	return s.fcm.WakeDevice(ctx, deviceID)
+}
+
+func canonicalDeviceKey(deviceID, model, connectionID string) string {
+	deviceID = strings.TrimSpace(deviceID)
+	if deviceID != "" && deviceID != "HOST-001" {
+		return deviceID
+	}
+	if model != "" {
+		return deviceID + "_" + model
+	}
+	if connectionID != "" {
+		return deviceID + "_" + connectionID
+	}
+	return deviceID
 }
 
 // ListDevices returns connected devices with their realtime state.
@@ -136,27 +209,26 @@ func (s *Service) ListDevices(ctx context.Context) ([]Device, error) {
 				continue
 			}
 
-		device, err := s.deviceFromSnapshot(ctx, snapshot)
-		if err != nil {
-			return nil, err
-		}
+			device, err := s.deviceFromSnapshot(ctx, snapshot)
+			if err != nil {
+				return nil, err
+			}
 
-		// Key by DeviceID + Model if available, or ConnectionID, to avoid collapsing multiple devices sharing a token
-		mapKey := snapshot.DeviceID
-		if snapshot.Model != "" {
-			mapKey = snapshot.DeviceID + "_" + snapshot.Model
-		} else if snapshot.ConnectionID != "" {
-			mapKey = snapshot.DeviceID + "_" + snapshot.ConnectionID
-		}
+			mapKey := canonicalDeviceKey(snapshot.DeviceID, snapshot.Model, snapshot.ConnectionID)
+			if snapshot.DeviceID == "HOST-001" {
+				if existing, ok := deviceMap[mapKey]; ok && existing.ConnectionID != "" && existing.ConnectionID != snapshot.ConnectionID {
+					mapKey = snapshot.DeviceID + "_" + snapshot.ConnectionID
+				}
+			}
 
-		if existing, ok := deviceMap[mapKey]; ok {
-			if snapshot.ConnectedAt.After(existing.ConnectedAt) {
+			if existing, ok := deviceMap[mapKey]; ok {
+				if snapshot.ConnectedAt.After(existing.ConnectedAt) {
+					deviceMap[mapKey] = device
+				}
+			} else {
 				deviceMap[mapKey] = device
 			}
-		} else {
-			deviceMap[mapKey] = device
 		}
-	}
 	}
 
 	// Merge enrolled devices from durable storage that are currently offline
@@ -164,20 +236,32 @@ func (s *Service) ListDevices(ctx context.Context) ([]Device, error) {
 		enrolledList, err := s.enrolled.ListEnrolledDevices(ctx)
 		if err == nil {
 			for _, dev := range enrolledList {
-				mapKey := dev.DeviceID
-				if dev.Model != "" {
-					mapKey = dev.DeviceID + "_" + dev.Model
-				}
+				mapKey := canonicalDeviceKey(dev.DeviceID, dev.Model, "")
 				if _, ok := deviceMap[mapKey]; !ok {
 					// Check if any active session matches deviceID prefix
 					hasActive := false
 					for _, activeDev := range deviceMap {
-						if activeDev.DeviceID == dev.DeviceID {
+						if activeDev.DeviceID == dev.DeviceID ||
+							(dev.DeviceID == "HOST-001" && dev.Model != "" && strings.EqualFold(activeDev.Model, dev.Model)) {
 							hasActive = true
 							break
 						}
 					}
+					if !hasActive && dev.DeviceID == "HOST-001" {
+						for _, otherEnrolled := range enrolledList {
+							if otherEnrolled.DeviceID != "HOST-001" && (dev.Model == "" || strings.EqualFold(otherEnrolled.Model, dev.Model)) {
+								hasActive = true
+								break
+							}
+						}
+					}
 					if !hasActive {
+						var locPtr *repository.Location
+						if s.locations != nil {
+							if loc, found, err := s.locations.GetLatest(ctx, dev.DeviceID); found && err == nil {
+								locPtr = &loc
+							}
+						}
 						deviceMap[mapKey] = Device{
 							DeviceID:          dev.DeviceID,
 							DeviceName:        dev.DeviceName,
@@ -189,6 +273,7 @@ func (s *Service) ListDevices(ctx context.Context) ([]Device, error) {
 							HeartbeatStatus:   heartbeatStatusStale, // offline/stale
 							ConnectedAt:       dev.LastSeen,
 							LastHeartbeat:     dev.LastSeen,
+							LatestLocation:    locPtr,
 						}
 					}
 				}
@@ -225,7 +310,17 @@ func (s *Service) GetDevice(ctx context.Context, deviceID string) (Device, bool,
 	// Fallback to durable enrolled storage if currently offline/disconnected
 	if s.enrolled != nil {
 		dev, err := s.enrolled.GetEnrolledDevice(ctx, deviceID)
+		if (err != nil || dev == nil) && strings.HasPrefix(deviceID, "HOST") && !strings.HasPrefix(deviceID, "HOST-001-") && strings.Contains(deviceID, "-") {
+			suffix := deviceID[strings.Index(deviceID, "-")+1:]
+			dev, err = s.enrolled.GetEnrolledDevice(ctx, "HOST-001-"+suffix)
+		}
 		if err == nil && dev != nil {
+			var locPtr *repository.Location
+			if s.locations != nil {
+				if loc, found, err := s.locations.GetLatest(ctx, dev.DeviceID); found && err == nil {
+					locPtr = &loc
+				}
+			}
 			return Device{
 				DeviceID:          dev.DeviceID,
 				DeviceName:        dev.DeviceName,
@@ -237,6 +332,7 @@ func (s *Service) GetDevice(ctx context.Context, deviceID string) (Device, bool,
 				HeartbeatStatus:   heartbeatStatusStale,
 				ConnectedAt:       dev.LastSeen,
 				LastHeartbeat:     dev.LastSeen,
+				LatestLocation:    locPtr,
 			}, true, nil
 		}
 	}

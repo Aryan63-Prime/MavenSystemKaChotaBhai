@@ -23,16 +23,16 @@ data class Device(
     /** Resolved callsign prioritizing explicit callsign, then hardware callsign extracted from deviceName. */
     val resolvedCallsign: String
         get() = callsign.ifBlank {
-            Regex("""\((HOST-[A-Za-z0-9_-]+)\)""").find(deviceName)?.groupValues?.get(1) ?: ""
+            Regex("""\((HOST\d*-[A-Za-z0-9_-]+)\)""").find(deviceName)?.groupValues?.get(1) ?: ""
         }
 
     /** Unique identity for UI rendering and tracking across sessions when devices share a deviceId token. */
     val uniqueKey: String
         get() = when {
             deviceId.isNotBlank() && deviceId != "HOST-001" && (deviceId.startsWith("HOST-") || deviceId.contains("-")) -> deviceId
+            hardwareId.isNotBlank() && hardwareId != "unknown_hw" -> "${deviceId}_${hardwareId}"
+            resolvedCallsign.isNotBlank() && resolvedCallsign.contains("-") -> "${deviceId}_${resolvedCallsign}"
             model.isNotBlank() && model != "Unknown" -> "${deviceId}_${model}"
-            hardwareId.isNotBlank() -> "${deviceId}_${hardwareId}"
-            resolvedCallsign.isNotBlank() -> "${deviceId}_${resolvedCallsign}"
             connectionId.isNotBlank() -> "${deviceId}_${connectionId}"
             else -> deviceId
         }

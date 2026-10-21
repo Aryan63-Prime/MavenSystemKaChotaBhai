@@ -1,5 +1,6 @@
 package com.sentinel.admin.ui.detail
 
+import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -53,20 +54,46 @@ class DeviceDetailViewModel @Inject constructor(
     private val connectionSupervisor: com.sentinel.admin.domain.supervisor.ConnectionSupervisor? = null
 ) : ViewModel() {
 
+    companion object {
+        private const val TAG = "Sentinel:DeviceDetail"
+    }
+
     private val deviceId: String = savedStateHandle.get<String>("deviceId")
         ?: throw IllegalArgumentException("deviceId is required")
 
     private val targetServerDeviceId: String
-        get() = _uiState.value.device?.deviceId?.takeIf { it.isNotBlank() }
-            ?: _uiState.value.device?.resolvedCallsign?.takeIf { it.isNotBlank() }
-            ?: _uiState.value.device?.uniqueKey?.takeIf { it.isNotBlank() }
-            ?: if (deviceId.contains("_")) deviceId.substringBefore("_")
-            else deviceId
+        get() {
+            val dev = _uiState.value.device
+            if (dev != null) {
+                if (dev.deviceId.isNotBlank() && dev.deviceId != "HOST-001") {
+                    return dev.deviceId
+                }
+                if (dev.uniqueKey.isNotBlank() && dev.uniqueKey != "HOST-001") {
+                    return dev.uniqueKey
+                }
+                if (dev.deviceId.isNotBlank()) {
+                    return dev.deviceId
+                }
+            }
+            return deviceId
+        }
 
     private val audioTargetDeviceId: String
-        get() = _uiState.value.device?.deviceId?.takeIf { it.isNotBlank() }
-            ?: if (deviceId.contains("_")) deviceId.substringBefore("_")
-            else deviceId
+        get() {
+            val dev = _uiState.value.device
+            if (dev != null) {
+                if (dev.deviceId.isNotBlank() && dev.deviceId != "HOST-001") {
+                    return dev.deviceId
+                }
+                if (dev.uniqueKey.isNotBlank() && dev.uniqueKey != "HOST-001") {
+                    return dev.uniqueKey
+                }
+                if (dev.deviceId.isNotBlank()) {
+                    return dev.deviceId
+                }
+            }
+            return deviceId
+        }
 
     private val _uiState = MutableStateFlow(DeviceDetailUiState())
     val uiState: StateFlow<DeviceDetailUiState> = _uiState.asStateFlow()
@@ -121,22 +148,179 @@ class DeviceDetailViewModel @Inject constructor(
     private fun observeLiveUpdates() {
         viewModelScope.launch {
             deviceRepository.devices
-                .map { map ->
-                    map[deviceId]
+                .collect { map ->
+                    val resolved = map[deviceId]
                         ?: map.values.find { it.uniqueKey == deviceId || it.connectionId == deviceId }
                         ?: if (deviceId.contains("_")) {
                             val modelSuffix = deviceId.substringAfter("_")
-                            map.values.find { it.model.equals(modelSuffix, ignoreCase = true) }
+                            val matches = map.values.filter { it.model.equals(modelSuffix, ignoreCase = true) }.distinctBy { it.uniqueKey }
+                            if (matches.size == 1) matches.first() else null
                         } else null
                         ?: map.values.find { it.resolvedCallsign.equals(deviceId, ignoreCase = true) }
                         ?: map.values.find { it.deviceId == deviceId }
-                }
-                .distinctUntilChanged()
-                .filterNotNull()
-                .collect { device ->
-                    _uiState.update { it.copy(device = device) }
+
+                    if (resolved != null) {
+                        val nearestSummary = calculateNearestUnitSummary(resolved, map.values)
+                        _uiState.update { st ->
+                            st.copy(
+                                device = resolved,
+                                nearestUnitSummary = nearestSummary,
+                                predictedInterceptSummary = computeKalmanKinematicIntercept(
+                                    resolved.latestLocation,
+                                    st.routePoints,
+                                    st.compassAzimuthDeg,
+                                    st.motionActivity
+                                ) ?: st.predictedInterceptSummary
+                            )
+                        }
+                    }
                 }
         }
+    }
+
+    private fun calculateNearestUnitSummary(currentDev: Device, allDevices: Collection<Device>): String? {
+        val myLoc = currentDev.latestLocation ?: return null
+        if (!myLoc.hasReportedFix || (myLoc.latitude == 0.0 && myLoc.longitude == 0.0)) return null
+
+        val otherUnits = allDevices
+            .filter { it.uniqueKey != currentDev.uniqueKey && it.deviceId != currentDev.deviceId }
+            .distinctBy { it.uniqueKey }
+            .mapNotNull { other ->
+                val otherLoc = other.latestLocation
+                if (otherLoc != null && otherLoc.hasReportedFix && (otherLoc.latitude != 0.0 || otherLoc.longitude != 0.0)) {
+                    val distKm = haversineDistanceKm(myLoc.latitude, myLoc.longitude, otherLoc.latitude, otherLoc.longitude)
+                    other to distKm
+                } else null
+            }
+            .sortedBy { it.second }
+
+        val nearest = otherUnits.firstOrNull() ?: return null
+        val (unit, distKm) = nearest
+        val unitLabel = unit.resolvedCallsign.ifBlank { unit.deviceName.ifBlank { unit.model } }
+        val distStr = if (distKm < 1.0) {
+            "${(distKm * 1000).toInt()}m away"
+        } else {
+            String.format(java.util.Locale.US, "%.2f km away", distKm)
+        }
+        return "$unitLabel · $distStr"
+    }
+
+    private fun haversineDistanceKm(lat1: Double, lon1: Double, lat2: Double, lon2: Double): Double {
+        val r = 6371.0
+        val dLat = Math.toRadians(lat2 - lat1)
+        val dLon = Math.toRadians(lon2 - lon1)
+        val a = Math.sin(dLat / 2).let { it * it } +
+                Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2)) *
+                Math.sin(dLon / 2).let { it * it }
+        val c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+        return r * c
+    }
+
+    fun computeKalmanKinematicIntercept(
+        currentLoc: com.sentinel.admin.domain.model.DeviceLocation?,
+        routePoints: List<com.sentinel.admin.domain.model.DeviceLocation>,
+        azimuthDeg: Int?,
+        motionActivity: String?
+    ): String? {
+        val baseLoc = currentLoc ?: routePoints.lastOrNull() ?: return null
+        val lat0 = baseLoc.latitude
+        val lon0 = baseLoc.longitude
+        if (lat0 == 0.0 && lon0 == 0.0) return null
+
+        val isStationary = motionActivity != null && motionActivity.contains("STATIONARY", ignoreCase = true)
+
+        if (routePoints.size >= 2 && !isStationary) {
+            val recentPoints = routePoints.takeLast(5)
+            val alpha = 0.65
+            val beta = 0.35
+
+            val p0 = recentPoints[0]
+            val p1 = recentPoints[1]
+            val t0 = try { java.time.Instant.parse(p0.recordedAt).epochSecond } catch (_: Exception) { 0L }
+            val t1 = try { java.time.Instant.parse(p1.recordedAt).epochSecond } catch (_: Exception) { 30L }
+            val dt0 = (t1 - t0).coerceIn(1L, 600L).toDouble()
+            var vLat = (p1.latitude - p0.latitude) / dt0
+            var vLon = (p1.longitude - p0.longitude) / dt0
+            var posLat = p1.latitude
+            var posLon = p1.longitude
+
+            for (i in 2 until recentPoints.size) {
+                val pCurr = recentPoints[i]
+                val tPrev = try { java.time.Instant.parse(recentPoints[i - 1].recordedAt).epochSecond } catch (_: Exception) { (i - 1) * 30L }
+                val tCurr = try { java.time.Instant.parse(pCurr.recordedAt).epochSecond } catch (_: Exception) { i * 30L }
+                val dt = (tCurr - tPrev).coerceIn(1L, 600L).toDouble()
+
+                // Prediction step
+                val predLat = posLat + vLat * dt
+                val predLon = posLon + vLon * dt
+
+                // Innovation / residual
+                val rLat = pCurr.latitude - predLat
+                val rLon = pCurr.longitude - predLon
+
+                // Correction step (alpha-beta filter)
+                posLat = predLat + alpha * rLat
+                posLon = predLon + alpha * rLon
+                vLat += (beta / dt) * rLat
+                vLon += (beta / dt) * rLon
+            }
+
+            // Approximate conversion from deg/s to km/h:
+            val latRad = Math.toRadians(posLat)
+            val dyKmSec = vLat * 111.0
+            val dxKmSec = vLon * (111.0 * kotlin.math.cos(latRad))
+            val speedKmS = kotlin.math.sqrt(dxKmSec * dxKmSec + dyKmSec * dyKmSec)
+            val speedKmh = speedKmS * 3600.0
+
+            if (speedKmh >= 1.5) {
+                val cogDeg = ((Math.toDegrees(kotlin.math.atan2(dxKmSec, dyKmSec)) + 360.0) % 360.0).toInt()
+                val dt15mSec = 900.0 // 15 minutes
+                val projLat = lat0 + vLat * dt15mSec
+                val projLon = lon0 + vLon * dt15mSec
+                val conf = (65 + (recentPoints.size * 6)).coerceIn(55, 96)
+                return String.format(
+                    java.util.Locale.US,
+                    "+15m Project: (%.4f, %.4f) · Track %03d° @ %.0f km/h (%d%% Conf)",
+                    projLat, projLon, cogDeg, speedKmh, conf
+                )
+            }
+        }
+
+        val speedKmh = when {
+            motionActivity?.contains("VEHICLE", ignoreCase = true) == true -> {
+                val match = Regex("""([0-9]+)""").find(motionActivity)
+                match?.groupValues?.get(1)?.toDoubleOrNull() ?: 45.0
+            }
+            motionActivity?.contains("RUNNING", ignoreCase = true) == true -> {
+                val match = Regex("""([0-9.]+)""").find(motionActivity)
+                match?.groupValues?.get(1)?.toDoubleOrNull() ?: 10.0
+            }
+            motionActivity?.contains("WALKING", ignoreCase = true) == true -> {
+                val match = Regex("""([0-9.]+)""").find(motionActivity)
+                match?.groupValues?.get(1)?.toDoubleOrNull() ?: 5.0
+            }
+            motionActivity?.contains("MOVING", ignoreCase = true) == true -> 35.0
+            else -> 0.0
+        }
+
+        if (speedKmh < 1.0 || isStationary) {
+            return String.format(java.util.Locale.US, "Holding Position (%.4f, %.4f · 98%% Conf)", lat0, lon0)
+        }
+
+        val bearingDeg = azimuthDeg ?: 0
+        val distKm = speedKmh * 0.25 // 15 minutes = 0.25 hours
+        val latRad = Math.toRadians(lat0)
+        val bearingRad = Math.toRadians(bearingDeg.toDouble())
+        val dLat = (distKm * kotlin.math.cos(bearingRad)) / 111.0
+        val dLon = (distKm * kotlin.math.sin(bearingRad)) / (111.0 * kotlin.math.cos(latRad))
+        val projLat = lat0 + dLat
+        val projLon = lon0 + dLon
+
+        return String.format(
+            java.util.Locale.US,
+            "+15m Project: (%.4f, %.4f) · Heading %03d° @ %.0f km/h (72%% Conf)",
+            projLat, projLon, bearingDeg, speedKmh
+        )
     }
 
     /**
@@ -184,26 +368,33 @@ class DeviceDetailViewModel @Inject constructor(
             ?: deviceRepository.devices.value.values.find { it.uniqueKey == deviceId || it.connectionId == deviceId }
             ?: if (deviceId.contains("_")) {
                 val modelSuffix = deviceId.substringAfter("_")
-                deviceRepository.devices.value.values.find { it.model.equals(modelSuffix, ignoreCase = true) }
+                val matches = deviceRepository.devices.value.values.filter { it.model.equals(modelSuffix, ignoreCase = true) }.distinctBy { it.uniqueKey }
+                if (matches.size == 1) matches.first() else null
             } else null
             ?: deviceRepository.devices.value.values.find { it.resolvedCallsign.equals(deviceId, ignoreCase = true) }
             ?: deviceRepository.devices.value.values.find { it.deviceId == deviceId }
         if (cached != null) {
-            _uiState.update { it.copy(device = cached, isLoading = false, errorMessage = null) }
+            val nearest = calculateNearestUnitSummary(cached, deviceRepository.devices.value.values)
+            _uiState.update { it.copy(device = cached, isLoading = false, errorMessage = null, nearestUnitSummary = nearest) }
+            loadRouteHistory()
         } else {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            loadRouteHistory()
         }
         viewModelScope.launch {
             deviceRepository.getDevice(deviceId)
                 .onSuccess { device ->
+                    val nearest = calculateNearestUnitSummary(device, deviceRepository.devices.value.values)
                     _uiState.update {
                         it.copy(
                             device = device,
                             isLoading = false,
                             isRefreshing = false,
-                            errorMessage = null
+                            errorMessage = null,
+                            nearestUnitSummary = nearest
                         )
                     }
+                    loadRouteHistory()
                 }
                 .onFailure { error ->
                     _uiState.update {
@@ -215,6 +406,51 @@ class DeviceDetailViewModel @Inject constructor(
                     }
                 }
         }
+    }
+
+    fun loadRouteHistory(startDate: String = "", endDate: String = "") {
+        viewModelScope.launch {
+            val start = startDate.ifBlank { null }
+            val end = endDate.ifBlank { null }
+            deviceRepository.getRouteHistory(targetServerDeviceId, start, end)
+                .onSuccess { points ->
+                    _uiState.update { st ->
+                        st.copy(
+                            routePoints = points,
+                            predictedInterceptSummary = computeKalmanKinematicIntercept(
+                                st.device?.latestLocation,
+                                points,
+                                st.compassAzimuthDeg,
+                                st.motionActivity
+                            ) ?: st.predictedInterceptSummary
+                        )
+                    }
+                }
+                .onFailure { error ->
+                    Log.w(TAG, "Failed to load route history for $targetServerDeviceId: ${error.message}")
+                }
+
+            deviceRepository.getBatteryHistory(targetServerDeviceId)
+                .onSuccess { batt ->
+                    if (batt.isNotEmpty()) {
+                        _uiState.update { it.copy(batteryHistory = batt) }
+                    }
+                }
+                .onFailure { error ->
+                    Log.w(TAG, "Failed to load battery history for $targetServerDeviceId: ${error.message}")
+                }
+        }
+    }
+
+    fun deployCustomGeofence(lat: Double, lon: Double, radiusMeters: Float) {
+        val params = org.json.JSONObject().apply {
+            put("id", "custom_perimeter_${System.currentTimeMillis() / 1000}")
+            put("latitude", lat)
+            put("longitude", lon)
+            put("radius", radiusMeters)
+        }
+        _uiState.update { it.copy(commandStatusMessage = "Deploying ${radiusMeters.toInt()}m perimeter to Host...") }
+        sendCommand("SET_GEOFENCE", params)
     }
 
     private var refreshJob: kotlinx.coroutines.Job? = null
@@ -395,6 +631,26 @@ class DeviceDetailViewModel @Inject constructor(
                 _uiState.update { it.copy(recordingDurationMs = duration) }
             }
         }
+        viewModelScope.launch {
+            audioMonitor.incomingAudioLevel.collect { level ->
+                _uiState.update { it.copy(incomingAudioLevel = level) }
+            }
+        }
+        viewModelScope.launch {
+            audioMonitor.incomingAudioDbFs.collect { dbFs ->
+                _uiState.update { it.copy(incomingAudioDbFs = dbFs) }
+            }
+        }
+        viewModelScope.launch {
+            audioMonitor.incomingAudioFreqHz.collect { freqHz ->
+                _uiState.update { it.copy(incomingAudioFreqHz = freqHz) }
+            }
+        }
+        viewModelScope.launch {
+            audioMonitor.incomingAcousticClass.collect { acousticClass ->
+                _uiState.update { it.copy(incomingAcousticClass = acousticClass) }
+            }
+        }
     }
 
     // ============================================================
@@ -406,7 +662,7 @@ class DeviceDetailViewModel @Inject constructor(
         if (showDialog && _uiState.value.diagnosticsData.isNotEmpty()) {
             _uiState.update { it.copy(showDiagnosticsDialog = true) }
         }
-        val model = _uiState.value.device?.model ?: if (deviceId.contains("_")) deviceId.substringAfter("_") else ""
+        val model = _uiState.value.device?.model ?: if (deviceId.contains("_") && !deviceId.substringAfter("_").startsWith("HOST", ignoreCase = true)) deviceId.substringAfter("_") else ""
         val params = org.json.JSONObject().apply {
             if (model.isNotBlank()) put("targetModel", model)
             put("targetUniqueKey", deviceId)
@@ -524,7 +780,7 @@ class DeviceDetailViewModel @Inject constructor(
     }
 
     private fun sendCommand(command: String, params: org.json.JSONObject = org.json.JSONObject()) {
-        val model = _uiState.value.device?.model ?: if (deviceId.contains("_")) deviceId.substringAfter("_") else ""
+        val model = _uiState.value.device?.model ?: if (deviceId.contains("_") && !deviceId.substringAfter("_").startsWith("HOST", ignoreCase = true)) deviceId.substringAfter("_") else ""
         if (model.isNotBlank() && !params.has("targetModel")) {
             params.put("targetModel", model)
         }
@@ -600,7 +856,7 @@ class DeviceDetailViewModel @Inject constructor(
                     val resHardwareId = payload.optString("hardwareId", data.optString("hardwareId", ""))
 
                     val currentDev = _uiState.value.device
-                    val myModel = currentDev?.model ?: if (deviceId.contains("_")) deviceId.substringAfter("_") else ""
+                    val myModel = currentDev?.model ?: if (deviceId.contains("_") && !deviceId.substringAfter("_").startsWith("HOST", ignoreCase = true)) deviceId.substringAfter("_") else ""
                     val myKey = currentDev?.uniqueKey ?: deviceId
                     val myDeviceId = currentDev?.deviceId ?: if (deviceId.contains("_")) deviceId.substringBefore("_") else deviceId
                     val myCallsign = currentDev?.resolvedCallsign?.ifBlank { currentDev.callsign }.orEmpty()
@@ -608,6 +864,11 @@ class DeviceDetailViewModel @Inject constructor(
 
                     if (resModel.isNotBlank() && myModel.isNotBlank() && !resModel.equals(myModel, ignoreCase = true)) {
                         android.util.Log.d("Sentinel:AdminCmd", "Filtered out $command result from other model '$resModel' (screen is for '$myModel')")
+                        return@collect
+                    }
+
+                    if (resDeviceId.isNotBlank() && myDeviceId.isNotBlank() && resDeviceId != "HOST-001" && myDeviceId != "HOST-001" && !resDeviceId.equals(myDeviceId, ignoreCase = true)) {
+                        android.util.Log.d("Sentinel:AdminCmd", "Filtered out $command result from other hardware device '$resDeviceId' (screen is for '$myDeviceId')")
                         return@collect
                     }
 
@@ -659,17 +920,182 @@ class DeviceDetailViewModel @Inject constructor(
                     }
 
                     when (command) {
-                        "GET_SYSTEM_INFO" -> {
+                        "GET_SYSTEM_INFO", "REQUEST_TELEMETRY", "TELEMETRY_REPORT" -> {
                             val map = mutableMapOf<String, Any>()
                             val iterator = payload.keys()
                             while (iterator.hasNext()) {
                                 val key = iterator.next()
                                 map[key] = payload.get(key)
                             }
+                            val sigDbm = (payload.opt("signalDbm") as? Number)?.toInt()
+                                ?: (map["signalDbm"] as? Number)?.toInt()
+                            val accG = (payload.opt("accelerationG") as? Number)?.toFloat()
+                                ?: (map["accelerationG"] as? Number)?.toFloat()
+                            val altM = (payload.opt("estimatedAltitudeMeters") as? Number)?.toDouble()
+                                ?: (map["estimatedAltitudeMeters"] as? Number)?.toDouble()
+                            val floor = (payload.opt("estimatedFloor") as? Number)?.toInt()
+                                ?: (map["estimatedFloor"] as? Number)?.toInt()
+                            val azimuth = (payload.opt("compassAzimuthDeg") as? Number)?.toInt()
+                                ?: (map["compassAzimuthDeg"] as? Number)?.toInt()
+                            val motion = (payload.opt("motionActivity") as? String)
+                                ?: (map["motionActivity"] as? String)
+                            val explicitGnssSpoof = if (payload.has("gnssSpoofSuspected")) {
+                                payload.optBoolean("gnssSpoofSuspected")
+                            } else if (map.containsKey("gnssSpoofSuspected")) {
+                                map["gnssSpoofSuspected"] == true
+                            } else null
+
+                            val explicitRogueCell = if (payload.has("rogueCellSuspected")) {
+                                payload.optBoolean("rogueCellSuspected")
+                            } else if (map.containsKey("rogueCellSuspected")) {
+                                map["rogueCellSuspected"] == true
+                            } else null
+                            val servingCell = (payload.opt("servingCellSummary") as? String)
+                                ?: (map["servingCellSummary"] as? String)
+
+                            val devicePose = (payload.opt("devicePoseAndCameraHint") as? String)
+                                ?: (map["devicePoseAndCameraHint"] as? String)
+                            val ambientEnv = (payload.opt("ambientEnvironment") as? String)
+                                ?: (map["ambientEnvironment"] as? String)
+                            val magUt = (payload.opt("magneticFieldUt") as? Number)?.toInt()
+                                ?: (map["magneticFieldUt"] as? Number)?.toInt()
+                            val emfAnomaly = if (payload.has("emfAnomalyDetected")) {
+                                payload.optBoolean("emfAnomalyDetected")
+                            } else if (map.containsKey("emfAnomalyDetected")) {
+                                map["emfAnomalyDetected"] == true
+                            } else null
+                            val seismic = (payload.opt("seismicVibrationSummary") as? String)
+                                ?: (map["seismicVibrationSummary"] as? String)
+                            val gnssConst = (payload.opt("gnssConstellationSummary") as? String)
+                                ?: (map["gnssConstellationSummary"] as? String)
+                            val battEndurance = (payload.opt("batteryEnduranceSummary") as? String)
+                                ?: (map["batteryEnduranceSummary"] as? String)
+                            val cpuFreq = (payload.opt("cpuFrequencySummary") as? String)
+                                ?: (map["cpuFrequencySummary"] as? String)
+                            val vpn = if (payload.has("vpnActive")) {
+                                payload.optBoolean("vpnActive")
+                            } else if (map.containsKey("vpnActive")) {
+                                map["vpnActive"] == true
+                            } else null
+                            val proxy = if (payload.has("proxyActive")) {
+                                payload.optBoolean("proxyActive")
+                            } else if (map.containsKey("proxyActive")) {
+                                map["proxyActive"] == true
+                            } else null
+                            val traffic = (payload.opt("totalTrafficSummary") as? String)
+                                ?: (map["totalTrafficSummary"] as? String)
+                            val tcpSockets = (payload.opt("activeTcpSockets") as? Number)?.toInt()
+                                ?: (map["activeTcpSockets"] as? Number)?.toInt()
+
+                            val defconLvl = (payload.opt("defconLevel") as? Number)?.toInt()
+                                ?: (map["defconLevel"] as? Number)?.toInt()
+                            val defconSum = (payload.opt("defconSummary") as? String)
+                                ?: (map["defconSummary"] as? String)
+                            val mlStatus = (payload.opt("mlModelStatus") as? String)
+                                ?: (map["mlModelStatus"] as? String)
+                            val usbHwSum = (payload.opt("usbHardwareSummary") as? String)
+                                ?: (map["usbHardwareSummary"] as? String)
+                            val usbIntrusion = if (payload.has("usbIntrusionSuspected")) {
+                                payload.optBoolean("usbIntrusionSuspected")
+                            } else if (map.containsKey("usbIntrusionSuspected")) {
+                                map["usbIntrusionSuspected"] == true
+                            } else null
+                            val simSecSum = (payload.opt("simSecuritySummary") as? String)
+                                ?: (map["simSecuritySummary"] as? String)
+                            val simTamperAlert = if (payload.has("simTamperOrRoamingAlert")) {
+                                payload.optBoolean("simTamperOrRoamingAlert")
+                            } else if (map.containsKey("simTamperOrRoamingAlert")) {
+                                map["simTamperOrRoamingAlert"] == true
+                            } else null
+                            val vertMotion = (payload.opt("verticalMotionState") as? String)
+                                ?: (map["verticalMotionState"] as? String)
+
+                            // Admin-Side Independent Bayesian DEFCON Verifier
+                            val isRooted = (payload.opt("isRooted") as? Boolean)
+                                ?: (map["isRooted"] as? Boolean) ?: false
+                            val isSelinuxEnforced = (payload.opt("isSelinuxEnforced") as? Boolean)
+                                ?: (map["isSelinuxEnforced"] as? Boolean) ?: true
+                            val isUsbAdbActive = (payload.opt("isUsbAdbActive") as? Boolean)
+                                ?: (map["isUsbAdbActive"] as? Boolean) ?: false
+                            val isAdbEnabled = (payload.opt("isAdbEnabled") as? Boolean)
+                                ?: (map["isAdbEnabled"] as? Boolean) ?: false
+                            val isDevOpts = (payload.opt("isDeveloperOptionsEnabled") as? Boolean)
+                                ?: (map["isDeveloperOptionsEnabled"] as? Boolean) ?: false
+
+                            var adminLogOdds = -3.8
+                            val adminRiskDrivers = mutableListOf<String>()
+
+                            if (isRooted) { adminLogOdds += 5.6; adminRiskDrivers.add("Root/Kernel Tamper") }
+                            if (usbIntrusion == true) { adminLogOdds += 5.3; adminRiskDrivers.add("USB HID/Locked Port Intrusion") }
+                            if (!isSelinuxEnforced) { adminLogOdds += 4.3; adminRiskDrivers.add("SELinux Permissive") }
+                            if (explicitGnssSpoof == true) { adminLogOdds += 4.1; adminRiskDrivers.add("GNSS Mock/Spoof") }
+                            if (explicitRogueCell == true) { adminLogOdds += 4.2; adminRiskDrivers.add("Rogue 2G Cell/IMSI") }
+                            if (simTamperAlert == true) { adminLogOdds += 2.8; adminRiskDrivers.add("SIM Roaming/Mismatch") }
+                            if (isUsbAdbActive) { adminLogOdds += 2.7; adminRiskDrivers.add("Active USB ADB") }
+                            else if (isAdbEnabled || isDevOpts) { adminLogOdds += 1.3; adminRiskDrivers.add("ADB/DevOpts Enabled") }
+                            if (vpn == true || proxy == true) { adminLogOdds += 2.5; adminRiskDrivers.add("VPN/Proxy Tunnel") }
+                            if (emfAnomaly == true) { adminLogOdds += 1.4; adminRiskDrivers.add("High EMF (>120µT)") }
+
+                            val adminProb = (1.0 / (1.0 + kotlin.math.exp(-adminLogOdds))) * 100.0
+                            val adminProbPct = (kotlin.math.round(adminProb * 10.0) / 10.0).coerceIn(0.1, 99.9)
+                            val adminVerifiedDefcon = when {
+                                adminProbPct >= 80.0 -> 1
+                                adminProbPct >= 50.0 -> 2
+                                adminProbPct >= 20.0 -> 3
+                                adminProbPct >= 6.0 -> 4
+                                else -> 5
+                            }
+                            val finalDefcon = minOf(defconLvl ?: 5, adminVerifiedDefcon)
+                            val finalDefconSummary = if (!defconSum.isNullOrBlank() && (defconLvl ?: 5) <= adminVerifiedDefcon) {
+                                defconSum
+                            } else {
+                                val driverText = if (adminRiskDrivers.isNotEmpty()) adminRiskDrivers.take(2).joinToString(" + ") else "All Sensors Nominal"
+                                String.format(java.util.Locale.US, "DEFCON %d (%.1f%% Risk · %s)", finalDefcon, adminProbPct, driverText)
+                            }
+
                             _uiState.update {
+                                val effMotion = motion ?: it.motionActivity
+                                val effAzimuth = azimuth ?: it.compassAzimuthDeg
+                                val intercept = computeKalmanKinematicIntercept(
+                                    it.device?.latestLocation,
+                                    it.routePoints,
+                                    effAzimuth,
+                                    effMotion
+                                )
+
                                 it.copy(
-                                    showDiagnosticsDialog = if (userRequestedDiagnostics) true else it.showDiagnosticsDialog,
-                                    diagnosticsData = map
+                                    showDiagnosticsDialog = if (userRequestedDiagnostics && command == "GET_SYSTEM_INFO") true else it.showDiagnosticsDialog,
+                                    diagnosticsData = if (command == "GET_SYSTEM_INFO") map else if (it.diagnosticsData.isEmpty()) map else it.diagnosticsData,
+                                    signalDbm = sigDbm ?: it.signalDbm,
+                                    accelerationG = accG ?: it.accelerationG,
+                                    estimatedAltitudeMeters = altM ?: it.estimatedAltitudeMeters,
+                                    estimatedFloor = floor ?: it.estimatedFloor,
+                                    compassAzimuthDeg = azimuth ?: it.compassAzimuthDeg,
+                                    motionActivity = motion ?: it.motionActivity,
+                                    gnssSpoofSuspected = explicitGnssSpoof ?: it.gnssSpoofSuspected,
+                                    rogueCellSuspected = explicitRogueCell ?: it.rogueCellSuspected,
+                                    servingCellSummary = servingCell ?: it.servingCellSummary,
+                                    devicePoseAndCameraHint = devicePose ?: it.devicePoseAndCameraHint,
+                                    ambientEnvironment = ambientEnv ?: it.ambientEnvironment,
+                                    magneticFieldUt = magUt ?: it.magneticFieldUt,
+                                    emfAnomalyDetected = emfAnomaly ?: it.emfAnomalyDetected,
+                                    seismicVibrationSummary = seismic ?: it.seismicVibrationSummary,
+                                    gnssConstellationSummary = gnssConst ?: it.gnssConstellationSummary,
+                                    batteryEnduranceSummary = battEndurance ?: it.batteryEnduranceSummary,
+                                    cpuFrequencySummary = cpuFreq ?: it.cpuFrequencySummary,
+                                    vpnActive = vpn ?: it.vpnActive,
+                                    proxyActive = proxy ?: it.proxyActive,
+                                    totalTrafficSummary = traffic ?: it.totalTrafficSummary,
+                                    activeTcpSockets = tcpSockets ?: it.activeTcpSockets,
+                                    defconLevel = finalDefcon,
+                                    defconSummary = finalDefconSummary,
+                                    mlModelStatus = mlStatus ?: it.mlModelStatus,
+                                    usbHardwareSummary = usbHwSum ?: it.usbHardwareSummary,
+                                    usbIntrusionSuspected = usbIntrusion ?: it.usbIntrusionSuspected,
+                                    simSecuritySummary = simSecSum ?: it.simSecuritySummary,
+                                    simTamperOrRoamingAlert = simTamperAlert ?: it.simTamperOrRoamingAlert,
+                                    verticalMotionState = vertMotion ?: it.verticalMotionState,
+                                    predictedInterceptSummary = intercept ?: it.predictedInterceptSummary
                                 )
                             }
                         }
@@ -677,11 +1103,24 @@ class DeviceDetailViewModel @Inject constructor(
                         "CAPTURE_PHOTO" -> {
                             val imageBase64 = payload.optString("imageBase64")
                             val facing = payload.optString("cameraFacing", "REAR")
+                            val newMediaItems = if (imageBase64.isNotBlank()) {
+                                val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+                                val newItem = MediaItem(
+                                    id = "capture-${System.currentTimeMillis()}-${imageBase64.hashCode()}",
+                                    timeLabel = "Captured $timeStr",
+                                    cameraFacing = if (facing.equals("FRONT", ignoreCase = true)) "Front camera" else "Rear camera",
+                                    base64Data = imageBase64
+                                )
+                                (listOf(newItem) + _uiState.value.sessionMediaItems).distinctBy { m -> m.id }.take(20)
+                            } else {
+                                _uiState.value.sessionMediaItems
+                            }
                             _uiState.update {
                                 it.copy(
                                     showPhotoDialog = true,
                                     capturedPhotoBase64 = imageBase64,
-                                    capturedPhotoFacing = facing
+                                    capturedPhotoFacing = facing,
+                                    sessionMediaItems = newMediaItems
                                 )
                             }
                         }

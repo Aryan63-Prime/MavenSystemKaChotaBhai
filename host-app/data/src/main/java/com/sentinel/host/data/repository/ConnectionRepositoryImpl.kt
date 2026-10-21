@@ -109,7 +109,7 @@ internal fun IncomingMessage.toEvent(): ConnectionEvent? = when (this) {
         ConnectionEvent.Error(401, "Authentication rejected")
     }
     is IncomingMessage.RegisterAck -> if (success) {
-        ConnectionEvent.Registered
+        ConnectionEvent.Registered(token)
     } else {
         ConnectionEvent.Error(409, "Registration rejected")
     }

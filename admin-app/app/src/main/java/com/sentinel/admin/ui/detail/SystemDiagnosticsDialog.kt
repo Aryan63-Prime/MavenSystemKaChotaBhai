@@ -227,11 +227,188 @@ fun SystemDiagnosticsDialog(
                     DiagnosticItem(label = "System Uptime", value = uptime)
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Text(
-                    text = if (isRooted) "System Posture: COMPROMISED" else "System Status: Nominal",
+                    text = "SIGINT / RF ENVIRONMENT & RADAR",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+
+                val rogueCell = data["rogueCellSuspected"] == true
+                val gnssSpoof = data["gnssSpoofSuspected"] == true
+                val neighborCount = data["neighborCellCount"]?.toString() ?: "0"
+                val servingCell = data["servingCellSummary"]?.toString() ?: ""
+                val signalDbm = data["signalDbm"]?.toString() ?: ""
+                val nearbyWifiCount = data["nearbyWifiCount"]?.toString() ?: ""
+
+                DiagnosticItem(
+                    label = "IMSI-Catcher Detection",
+                    value = if (rogueCell) "SUSPECTED (2G Downgrade / Fake BTS)" else "Clean (No rogue tower detected)"
+                )
+                DiagnosticItem(
+                    label = "GNSS Spoof Detection",
+                    value = if (gnssSpoof) "SUSPECTED (Mock location detected)" else "Clean (Authentic hardware GNSS)"
+                )
+                if (servingCell.isNotBlank() && servingCell != "N/A") {
+                    DiagnosticItem(label = "Serving Cell", value = servingCell, isMonospace = true)
+                }
+                if (signalDbm.isNotBlank() && signalDbm != "-75") {
+                    DiagnosticItem(label = "Signal Strength", value = "$signalDbm dBm")
+                }
+                DiagnosticItem(label = "Neighbor Cell Towers", value = "$neighborCount detected")
+                if (nearbyWifiCount.isNotBlank()) {
+                    DiagnosticItem(label = "Nearby Wi-Fi BSSIDs", value = "$nearbyWifiCount in range")
+                }
+
+                @Suppress("UNCHECKED_CAST")
+                val towers = data["cellTowers"] as? List<Map<String, Any>>
+                if (!towers.isNullOrEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "DETECTED CELL TOWERS (${towers.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    towers.take(6).forEach { tower ->
+                        val tType = tower["type"]?.toString() ?: "Cell"
+                        val tReg = if (tower["registered"] == true) "Registered" else "Neighbor"
+                        val tId = tower["identity"]?.toString() ?: ""
+                        val tDbm = tower["dbm"]?.toString() ?: ""
+                        DiagnosticItem(
+                            label = "$tType [$tReg]",
+                            value = "$tId ($tDbm dBm)",
+                            isMonospace = true
+                        )
+                    }
+                }
+
+                @Suppress("UNCHECKED_CAST")
+                val wifis = data["nearbyWifiBssids"] as? List<Map<String, Any>>
+                if (!wifis.isNullOrEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "INDOOR WI-FI RADAR (${wifis.size})",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.secondary
+                    )
+                    wifis.take(6).forEach { w ->
+                        val wSsid = w["ssid"]?.toString() ?: ""
+                        val wBssid = w["bssid"]?.toString() ?: ""
+                        val wRssi = w["rssiDbm"]?.toString() ?: ""
+                        DiagnosticItem(
+                            label = wSsid,
+                            value = "$wBssid ($wRssi dBm)",
+                            isMonospace = true
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "OMEGA FULL-SPECTRUM INTELLIGENCE",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+
+                val devicePose = data["devicePoseAndCameraHint"]?.toString() ?: ""
+                val ambientEnv = data["ambientEnvironment"]?.toString() ?: ""
+                val magUt = data["magneticFieldUt"]?.toString() ?: ""
+                val emfAnomaly = data["emfAnomalyDetected"] == true
+                val seismic = data["seismicVibrationSummary"]?.toString() ?: ""
+                val gnssConst = data["gnssConstellationSummary"]?.toString() ?: ""
+                val battEndurance = data["batteryEnduranceSummary"]?.toString() ?: ""
+                val cpuFreq = data["cpuFrequencySummary"]?.toString() ?: ""
+                val vpnActive = data["vpnActive"] == true
+                val totalTraffic = data["totalTrafficSummary"]?.toString() ?: ""
+                val activeSockets = data["activeTcpSockets"]?.toString() ?: ""
+
+                if (devicePose.isNotBlank()) {
+                    DiagnosticItem(label = "3D Pose & Camera Hint", value = devicePose)
+                }
+                if (ambientEnv.isNotBlank()) {
+                    DiagnosticItem(label = "Ambient Lux Environment", value = ambientEnv)
+                }
+                if (magUt.isNotBlank()) {
+                    DiagnosticItem(
+                        label = "Magnetic Flux Density",
+                        value = "$magUt µT${if (emfAnomaly) " ⚠️ EMF ANOMALY DETECTED (>120 µT)" else " (Nominal Earth field)"}"
+                    )
+                }
+                if (seismic.isNotBlank()) {
+                    DiagnosticItem(label = "Micro-Seismic Vibration", value = seismic)
+                }
+                if (gnssConst.isNotBlank()) {
+                    DiagnosticItem(label = "GNSS Constellation Lock", value = gnssConst)
+                }
+                if (battEndurance.isNotBlank()) {
+                    DiagnosticItem(label = "Battery Endurance Prediction", value = battEndurance)
+                }
+                if (cpuFreq.isNotBlank()) {
+                    DiagnosticItem(label = "CPU Dynamic Frequency", value = cpuFreq)
+                }
+                DiagnosticItem(
+                    label = "Kernel VPN / Tunnel",
+                    value = if (vpnActive) "ACTIVE (tun0/wg0/VPN Transport Detected)" else "Inactive (Direct Route)"
+                )
+                if (totalTraffic.isNotBlank() && totalTraffic != "N/A") {
+                    DiagnosticItem(label = "Cumulative Traffic Stats", value = totalTraffic)
+                }
+                if (activeSockets.isNotBlank()) {
+                    DiagnosticItem(label = "Active TCP Sockets", value = "$activeSockets sockets (/proc/net/tcp)")
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "UNIFIED DEFCON & ONLINE ML ENGINE",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+
+                val defconSum = data["defconSummary"]?.toString() ?: ""
+                val mlStatus = data["mlModelStatus"]?.toString() ?: ""
+                val vertMotion = data["verticalMotionState"]?.toString() ?: ""
+                val usbHw = data["usbHardwareSummary"]?.toString() ?: ""
+                val simSec = data["simSecuritySummary"]?.toString() ?: ""
+
+                if (defconSum.isNotBlank()) {
+                    DiagnosticItem(label = "Threat Posture (ML)", value = defconSum)
+                }
+                if (mlStatus.isNotBlank()) {
+                    DiagnosticItem(label = "Online ML Baseline", value = mlStatus)
+                }
+                if (vertMotion.isNotBlank()) {
+                    DiagnosticItem(label = "Vertical Variometer", value = vertMotion)
+                }
+                if (usbHw.isNotBlank()) {
+                    DiagnosticItem(label = "USB-C Port Security", value = usbHw)
+                }
+                if (simSec.isNotBlank()) {
+                    DiagnosticItem(label = "SIM / Baseband SIGINT", value = simSec)
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                val isCompromised = isRooted || rogueCell || gnssSpoof
+                Text(
+                    text = if (isCompromised) "System Posture: ALERT / POTENTIAL THREAT" else "System Status: Nominal",
                     style = MaterialTheme.typography.labelMedium,
-                    color = if (isRooted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                    color = if (isCompromised) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                 )
             }
         },

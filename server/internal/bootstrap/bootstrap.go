@@ -58,6 +58,7 @@ func Build() (*app.Application, error) {
 	authHandler := auth.NewHandler(authService)
 	deviceService := device.NewServiceWithRepository(deviceRepo)
 	deviceHandler := device.NewHandler(deviceService)
+	deviceHandler.SetTokenGenerator(authService)
 	heartbeatService := heartbeat.NewService()
 	heartbeatHandler := heartbeat.NewHandler(heartbeatService)
 	redisClient := database.NewRedisClient(database.RedisOptions{
@@ -70,6 +71,7 @@ func Build() (*app.Application, error) {
 	locationService := location.NewServiceWithDependencies(locationRepository, nil, nil)
 	locationHandler := location.NewHandler(locationService)
 	locationHandler.SetBatteryLogger(deviceRepo)
+	locationHandler.SetLocationHistoryLogger(deviceRepo)
 	listenerRepository := repository.NewRedisListenerRepository(redisClient)
 	audioService := audio.NewService(listenerRepository, nil)
 	audioHandler := audio.NewHandler(audioService)

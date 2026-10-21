@@ -54,3 +54,30 @@ data class WakeResponseDto(
     @Json(name = "deviceId") val deviceId: String? = null,
     @Json(name = "messageId") val messageId: String? = null
 )
+
+/**
+ * DTO for GET /devices/{deviceId}/route response.
+ */
+@JsonClass(generateAdapter = true)
+data class RouteHistoryResponse(
+    @Json(name = "deviceId") val deviceId: String = "",
+    @Json(name = "points") val points: List<DeviceLocationDto> = emptyList()
+)
+
+/**
+ * DTO for GET /devices/{deviceId}/battery-history response.
+ */
+@JsonClass(generateAdapter = true)
+data class BatteryHistoryDto(
+    @Json(name = "batteryPercent") val batteryPercent: Int = 0,
+    @Json(name = "batteryTempC") val batteryTempC: Double = 25.0,
+    @Json(name = "isCharging") val isCharging: Boolean = false,
+    @Json(name = "thermalStatus") val thermalStatus: String = "Nominal",
+    @Json(name = "recordedAt") val recordedAt: String = ""
+)
+
+@JsonClass(generateAdapter = true)
+data class BatteryHistoryResponse(
+    @Json(name = "deviceId") val deviceId: String = "",
+    @Json(name = "history") val history: List<BatteryHistoryDto> = emptyList()
+)

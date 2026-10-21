@@ -136,13 +136,19 @@ fun AdminNavGraph() {
                 onDismissMdmMessage = viewModel::dismissMdmMessage,
                 onDismissDialogs = viewModel::dismissDialogs,
                 onWakeDeviceClick = viewModel::wakeDevice,
-                onConsumeRefreshOutcome = viewModel::consumeRefreshOutcome
+                onConsumeRefreshOutcome = viewModel::consumeRefreshOutcome,
+                onDateRangeChanged = viewModel::loadRouteHistory,
+                onDeployGeofence = viewModel::deployCustomGeofence
             )
         }
 
         composable(AdminRoutes.FILE_BROWSER) { backStackEntry ->
             val rawDeviceId = backStackEntry.arguments?.getString("deviceId") ?: ""
-            val deviceId = if (rawDeviceId.contains("_")) rawDeviceId.substringBefore("_") else rawDeviceId
+            val deviceId = if (rawDeviceId.contains("_") && rawDeviceId.substringBefore("_") != "HOST-001") {
+                rawDeviceId.substringBefore("_")
+            } else {
+                rawDeviceId
+            }
             FileBrowserScreen(
                 deviceId = deviceId,
                 onBack = { navController.popBackStack() }

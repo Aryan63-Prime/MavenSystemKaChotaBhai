@@ -16,9 +16,14 @@ type FcmRegistrar interface {
 	RegisterToken(ctx context.Context, deviceID, fcmToken string) error
 }
 
+type TokenGenerator interface {
+	GenerateToken(deviceID string) (string, error)
+}
+
 type Handler struct {
-	service *Service
-	fcm     FcmRegistrar
+	service  *Service
+	fcm      FcmRegistrar
+	tokenGen TokenGenerator
 }
 
 func NewHandler(service *Service) *Handler {
@@ -29,6 +34,10 @@ func NewHandler(service *Service) *Handler {
 
 func (h *Handler) SetFcmRegistrar(fcm FcmRegistrar) {
 	h.fcm = fcm
+}
+
+func (h *Handler) SetTokenGenerator(tg TokenGenerator) {
+	h.tokenGen = tg
 }
 
 func (h *Handler) Handle(ctx context.Context, session Session, message protocol.Message) (*protocol.Message, error) {
@@ -53,9 +62,16 @@ func (h *Handler) Handle(ctx context.Context, session Session, message protocol.
 
 	session.SetRegistered(payload)
 
+	var token string
+	if h.tokenGen != nil && payload.DeviceID != "" && payload.DeviceID != "HOST-001" {
+		if t, err := h.tokenGen.GenerateToken(payload.DeviceID); err == nil {
+			token = t
+		}
+	}
+
 	return protocol.NewMessage(
 		protocol.TypeRegisterAck,
 		message.Sequence,
-		protocol.RegisterAckMessage{Success: true},
+		protocol.RegisterAckMessage{Success: true, Token: token},
 	)
 }

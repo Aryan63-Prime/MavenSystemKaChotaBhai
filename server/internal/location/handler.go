@@ -19,9 +19,14 @@ type BatteryLogger interface {
 	SaveBatteryHistory(ctx context.Context, entry repository.BatteryHistoryEntry) error
 }
 
+type LocationHistoryLogger interface {
+	SaveLocationHistory(ctx context.Context, loc repository.Location) error
+}
+
 type Handler struct {
 	service       *Service
 	batteryLogger BatteryLogger
+	historyLogger LocationHistoryLogger
 }
 
 func NewHandler(service *Service) *Handler {
@@ -33,6 +38,11 @@ func NewHandler(service *Service) *Handler {
 // SetBatteryLogger configures the battery history storage logger.
 func (h *Handler) SetBatteryLogger(l BatteryLogger) {
 	h.batteryLogger = l
+}
+
+// SetLocationHistoryLogger configures the location breadcrumb history storage logger.
+func (h *Handler) SetLocationHistoryLogger(l LocationHistoryLogger) {
+	h.historyLogger = l
 }
 
 func (h *Handler) Handle(ctx context.Context, session Session, message protocol.Message) (*protocol.Message, error) {
@@ -52,18 +62,12 @@ func (h *Handler) Handle(ctx context.Context, session Session, message protocol.
 		return nil, err
 	}
 
-	// Also ensure alias lookup works so Redis key matches snapshot.DeviceID used in admin/service.go
-	if authID := strings.TrimSpace(session.AuthenticatedDeviceID()); authID != "" && authID != deviceID {
-		_, _ = h.service.Handle(ctx, authID, payload)
-	}
+	// Only write the hardware-specific callsign alias (e.g. HOST-VIVO-CFAE), NEVER write to shared "HOST-001"!
 	if strings.HasPrefix(deviceID, "HOST-001-") {
-		_, _ = h.service.Handle(ctx, "HOST-001", payload)
 		suffix := strings.TrimPrefix(deviceID, "HOST-001-")
-		_, _ = h.service.Handle(ctx, "HOST-"+suffix, payload)
-	}
-	if strings.Contains(deviceID, "_") {
-		base := strings.SplitN(deviceID, "_", 2)[0]
-		_, _ = h.service.Handle(ctx, base, payload)
+		if suffix != "" {
+			_, _ = h.service.Handle(ctx, "HOST-"+suffix, payload)
+		}
 	}
 
 	session.SetLocation(payload)
@@ -76,6 +80,18 @@ func (h *Handler) Handle(ctx context.Context, session Session, message protocol.
 			IsCharging:     strings.Contains(strings.ToLower(payload.Network), "charging"),
 			ThermalStatus:  "Nominal",
 			RecordedAt:     time.Now().UTC(),
+		})
+	}
+
+	if h.historyLogger != nil && (payload.Latitude != 0 || payload.Longitude != 0) {
+		_ = h.historyLogger.SaveLocationHistory(ctx, repository.Location{
+			DeviceID:   deviceID,
+			Latitude:   payload.Latitude,
+			Longitude:  payload.Longitude,
+			Accuracy:   payload.Accuracy,
+			Battery:    payload.Battery,
+			Network:    payload.Network,
+			RecordedAt: time.Now().UTC(),
 		})
 	}
 

@@ -166,7 +166,7 @@ fun SensorHistoryDialog(
                     title = "Network signal",
                     valueText = signalText,
                     valueColor = FigmaAccentBlue,
-                    statusText = "Host does not currently stream signal dBm"
+                    statusText = if (signalDbm != null) "Live RF link signal strength from device" else "Host does not currently stream signal dBm"
                 )
 
                 Spacer(modifier = Modifier.height(14.dp))
@@ -181,7 +181,7 @@ fun SensorHistoryDialog(
                     title = "Acceleration magnitude",
                     valueText = motionText,
                     valueColor = FigmaAccentAmber,
-                    statusText = "Continuous accelerometer stream requires backend endpoint"
+                    statusText = if (accelerationG != null) "Live 3-axis IMU acceleration magnitude" else "Continuous accelerometer stream requires backend endpoint"
                 )
             }
         }

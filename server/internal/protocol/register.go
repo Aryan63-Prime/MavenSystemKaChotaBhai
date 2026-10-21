@@ -9,5 +9,6 @@ type RegisterMessage struct {
 }
 
 type RegisterAckMessage struct {
-	Success bool `json:"success"`
+	Success bool   `json:"success"`
+	Token   string `json:"token,omitempty"`
 }

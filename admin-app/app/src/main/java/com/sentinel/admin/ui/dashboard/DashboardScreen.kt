@@ -229,7 +229,13 @@ fun DashboardScreen(
                         EmergencyAlertBanner(
                             alert = alert,
                             onSilence = onDismissEmergency,
-                            onViewDevice = { onDeviceClick(alert.deviceId) },
+                            onViewDevice = {
+                                val targetKey = uiState.devices.find {
+                                    (alert.callsign.isNotBlank() && it.resolvedCallsign.equals(alert.callsign, ignoreCase = true)) ||
+                                    (alert.deviceId != "HOST-001" && it.deviceId == alert.deviceId)
+                                }?.uniqueKey ?: alert.deviceId
+                                onDeviceClick(targetKey)
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(horizontal = 16.dp, vertical = 6.dp)
@@ -361,7 +367,13 @@ fun DashboardScreen(
                                 EmergencyAlertBanner(
                                     alert = alert,
                                     onSilence = onDismissEmergency,
-                                    onViewDevice = { onDeviceClick(alert.deviceId) },
+                                    onViewDevice = {
+                                        val targetKey = uiState.devices.find {
+                                            (alert.callsign.isNotBlank() && it.resolvedCallsign.equals(alert.callsign, ignoreCase = true)) ||
+                                            (alert.deviceId != "HOST-001" && it.deviceId == alert.deviceId)
+                                        }?.uniqueKey ?: alert.deviceId
+                                        onDeviceClick(targetKey)
+                                    },
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .padding(vertical = 4.dp)
@@ -1111,14 +1123,28 @@ fun EmergencyAlertBanner(
                 )
                 Spacer(modifier = Modifier.width(10.dp))
                 Column(modifier = Modifier.weight(1f)) {
+                    val alertTitle = when {
+                        alert.triggerReason.contains("GEOFENCE", ignoreCase = true) ||
+                        alert.triggerReason.contains("PERIMETER", ignoreCase = true) ->
+                            "🚨 PERIMETER BREACH: ${alert.callsign}"
+                        alert.triggerReason.contains("BATTERY", ignoreCase = true) ->
+                            "🚨 CRITICAL BATTERY: ${alert.callsign}"
+                        else ->
+                            "🚨 FALL DETECTED: ${alert.callsign}"
+                    }
                     Text(
-                        text = "🚨 FALL DETECTED: ${alert.callsign}",
+                        text = alertTitle,
                         color = Color.White,
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp
                     )
+                    val detailSubtitle = if (alert.impactGForce > 0.0) {
+                        "${alert.model} • Impact: ${String.format(java.util.Locale.US, "%.1f", alert.impactGForce)}g • Battery: ${alert.battery ?: 0}%"
+                    } else {
+                        "${alert.model} • ${alert.triggerReason} • Battery: ${alert.battery ?: 0}%"
+                    }
                     Text(
-                        text = "${alert.model} • Impact: ${String.format(java.util.Locale.US, "%.1f", alert.impactGForce)}g • Battery: ${alert.battery ?: 0}%",
+                        text = detailSubtitle,
                         color = Color(0xFFFFB3B3),
                         fontSize = 12.sp
                     )
