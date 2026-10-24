@@ -682,7 +682,7 @@ fun SovereignIamDialog(
                                                     ) {
                                                         Text("Suspend", fontSize = 10.sp)
                                                     }
-                                                } else if (isSuspended) {
+                                                } else if (isSuspended || isRevoked) {
                                                     OutlinedButton(
                                                         onClick = { viewModel.setAdminStatus(admin.adminId, "ACTIVE") },
                                                         colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF34D399)),
@@ -700,26 +700,28 @@ fun SovereignIamDialog(
                                                         Text("Revoke", fontSize = 10.sp)
                                                     }
                                                 }
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        viewModel.setAdminPermissions(admin.adminId, listOf("VIEW_TELEMETRY"))
-                                                    },
-                                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8)),
-                                                    modifier = Modifier.weight(1.1f)
-                                                ) {
-                                                    Text("Read-Only", fontSize = 9.sp)
-                                                }
-                                                OutlinedButton(
-                                                    onClick = {
-                                                        viewModel.setAdminPermissions(
-                                                            admin.adminId,
-                                                            listOf("VIEW_TELEMETRY", "CAMERA_CAPTURE", "LIVE_AUDIO", "FILE_ACCESS", "DEVICE_CONTROL")
-                                                        )
-                                                    },
-                                                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
-                                                    modifier = Modifier.weight(1.1f)
-                                                ) {
-                                                    Text("Full Ops", fontSize = 9.sp)
+                                                if (isActive) {
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            viewModel.setAdminPermissions(admin.adminId, listOf("VIEW_TELEMETRY"))
+                                                        },
+                                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF94A3B8)),
+                                                        modifier = Modifier.weight(1.1f)
+                                                    ) {
+                                                        Text("Read-Only", fontSize = 9.sp)
+                                                    }
+                                                    OutlinedButton(
+                                                        onClick = {
+                                                            viewModel.setAdminPermissions(
+                                                                admin.adminId,
+                                                                listOf("VIEW_TELEMETRY", "CAMERA_CAPTURE", "LIVE_AUDIO", "FILE_ACCESS", "DEVICE_CONTROL")
+                                                            )
+                                                        },
+                                                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFF38BDF8)),
+                                                        modifier = Modifier.weight(1.1f)
+                                                    ) {
+                                                        Text("Full Ops", fontSize = 9.sp)
+                                                    }
                                                 }
                                             }
                                         }

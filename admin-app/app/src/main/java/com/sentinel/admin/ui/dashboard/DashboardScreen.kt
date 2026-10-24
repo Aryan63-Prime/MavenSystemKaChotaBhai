@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.NetworkCell
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.filled.Warning
@@ -127,6 +128,7 @@ fun DashboardScreen(
     modifier: Modifier = Modifier
 ) {
     var sortMenuExpanded by remember { mutableStateOf(false) }
+    var showIamDialog by remember { mutableStateOf(false) }
     val onlineCount = uiState.devices.count { it.heartbeatStatus == "online" }
     val configuration = LocalConfiguration.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
@@ -207,6 +209,14 @@ fun DashboardScreen(
                             if (uiState.viewMode == ViewMode.LIST) Icons.Default.Map else Icons.Default.ViewList,
                             contentDescription = if (uiState.viewMode == ViewMode.LIST) "Map view" else "List view",
                             tint = Color(0xFFAAC7E8)
+                        )
+                    }
+                    // Sovereign IAM & Intrusion Console
+                    IconButton(onClick = { showIamDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = "Sovereign IAM & Intrusion Console",
+                            tint = Color(0xFFF59E0B)
                         )
                     }
                     // Refresh
@@ -541,6 +551,12 @@ fun DashboardScreen(
                 }
             }
         }
+    }
+
+    if (showIamDialog) {
+        com.sentinel.admin.ui.iam.SovereignIamDialog(
+            onDismiss = { showIamDialog = false }
+        )
     }
 }
 

@@ -193,7 +193,6 @@ fun DeviceDetailScreen(
 ) {
     var showLockConfirmation by remember { mutableStateOf(false) }
     var showBeaconConfirmation by remember { mutableStateOf(false) }
-    var showIamDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     var ttsEngine by remember { mutableStateOf<android.speech.tts.TextToSpeech?>(null) }
@@ -285,13 +284,6 @@ fun DeviceDetailScreen(
                             tint = Color(0xFF38BDF8)
                         )
                     }
-                    IconButton(onClick = { showIamDialog = true }) {
-                        Icon(
-                            imageVector = Icons.Default.Security,
-                            contentDescription = "Sovereign IAM & Intrusion Console",
-                            tint = Color(0xFFF59E0B)
-                        )
-                    }
                     IconButton(onClick = onWakeDeviceClick, enabled = !uiState.isWakingDevice) {
                         Icon(
                             imageVector = Icons.Default.Bolt,
@@ -375,7 +367,6 @@ fun DeviceDetailScreen(
                             onRecordingsClick = onRecordingsClick,
                             onFilesClick = { onFilesClick(uiState.device.deviceId.takeIf { it != "HOST-001" } ?: uiState.device.uniqueKey) },
                             onSystemInfoClick = onSystemInfoClick,
-                            onOpenIamDialog = { showIamDialog = true },
                             onTriggerBeaconClick = { showBeaconConfirmation = true },
                             onCapturePhotoClick = onCapturePhotoClick,
                             onFetchLogsClick = onFetchLogsClick,
@@ -533,11 +524,6 @@ fun DeviceDetailScreen(
             if (uiState.showInstalledAppsDialog) {
                 InstalledAppsDialog(apps = uiState.installedAppsList, onDismiss = onDismissDialogs)
             }
-            if (showIamDialog) {
-                com.sentinel.admin.ui.iam.SovereignIamDialog(
-                    onDismiss = { showIamDialog = false }
-                )
-            }
             if (showLockConfirmation) {
                 AlertDialog(
                     onDismissRequest = { showLockConfirmation = false },
@@ -619,7 +605,6 @@ private fun DeviceContent(
     onRecordingsClick: () -> Unit,
     onFilesClick: () -> Unit,
     onSystemInfoClick: () -> Unit = {},
-    onOpenIamDialog: () -> Unit = {},
     onTriggerBeaconClick: () -> Unit = {},
     onCapturePhotoClick: (useFront: Boolean) -> Unit = {},
     onFetchLogsClick: () -> Unit = {},
@@ -888,22 +873,6 @@ private fun DeviceContent(
                             modifier = tabModifier.padding(bottom = 20.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
-                            Button(
-                                onClick = onOpenIamDialog,
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = Color(0xFF1E293B),
-                                    contentColor = Color(0xFF38BDF8)
-                                ),
-                                shape = RoundedCornerShape(8.dp),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .border(1.dp, Color(0xFF0284C7), RoundedCornerShape(8.dp))
-                            ) {
-                                Icon(Icons.Default.Security, contentDescription = null, tint = Color(0xFF38BDF8), modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("🛡️ SOVEREIGN IAM & INTRUSION CONSOLE", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                            }
-
                             // J.A.R.V.I.S. C4ISR Tactical HUD Card
                             JarvisTacticalCard(
                                 defconLevel = defconLevel,
