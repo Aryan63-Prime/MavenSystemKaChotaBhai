@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Battery4Bar
 import androidx.compose.material.icons.filled.BatteryChargingFull
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.DevicesOther
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Map
@@ -214,9 +215,9 @@ fun DashboardScreen(
                     // Sovereign IAM & Intrusion Console
                     IconButton(onClick = { showIamDialog = true }) {
                         Icon(
-                            imageVector = Icons.Default.Security,
+                            imageVector = Icons.Default.AdminPanelSettings,
                             contentDescription = "Sovereign IAM & Intrusion Console",
-                            tint = Color(0xFFF59E0B)
+                            tint = Color(0xFF10B981)
                         )
                     }
                     // Refresh
