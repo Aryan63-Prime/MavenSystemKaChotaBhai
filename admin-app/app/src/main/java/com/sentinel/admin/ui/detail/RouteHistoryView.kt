@@ -20,6 +20,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -30,6 +32,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -167,6 +170,7 @@ fun RouteHistoryView(
     isOnline: Boolean,
     modifier: Modifier = Modifier,
     routePoints: List<DeviceLocation> = emptyList(),
+    predictedInterceptCoords: Pair<Double, Double>? = null,
     onDateRangeChanged: (String, String) -> Unit = { _, _ -> },
     geofenceStateHolder: com.sentinel.admin.ui.map.GeofenceEditorStateHolder? = null,
     onDeployGeofence: (Double, Double, Float) -> Unit = { _, _, _ -> }
@@ -230,7 +234,7 @@ fun RouteHistoryView(
                 val isSelected = activeFilterName == filter.name
                 Box(
                     modifier = Modifier
-                        .heightIn(min = 48.dp)
+                        .heightIn(min = 34.dp)
                         .clip(RoundedCornerShape(12.dp))
                         .background(if (isSelected) FigmaTabSelected else FigmaButtonSurface)
                         .border(
@@ -259,7 +263,7 @@ fun RouteHistoryView(
                                 }
                             }
                         }
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                         .semantics {
                             role = Role.Tab
                             contentDescription = "Filter route by ${filter.label}"
@@ -268,8 +272,8 @@ fun RouteHistoryView(
                 ) {
                     Text(
                         text = filter.label,
-                        fontSize = 13.sp,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold,
                         color = if (isSelected) FigmaAccentBlue else FigmaTextMuted
                     )
                 }
@@ -286,7 +290,7 @@ fun RouteHistoryView(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -332,83 +336,72 @@ fun RouteHistoryView(
 
         // Route Dependency / Active Notice
         if (routePoints.isNotEmpty()) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF14241B))
-                    .border(1.dp, Color(0xFF1E462E), RoundedCornerShape(10.dp))
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xFF14241B),
+                border = BorderStroke(1.dp, Color(0xFF1E462E))
             ) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = null,
-                    tint = Color(0xFF4ADE80),
-                    modifier = Modifier
-                        .padding(end = 10.dp)
-                        .size(20.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.Info, contentDescription = null, tint = Color(0xFF4ADE80), modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
                     Text(
-                        text = "Historical Route Replay Active",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFF4ADE80)
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = "Displaying ${routePoints.size} recorded breadcrumbs between $appliedStartDate and $appliedEndDate. Use the scrubber slider below to step through waypoints.",
+                        text = "Replay Active: ${routePoints.size} waypoints ($appliedStartDate) · Use slider below",
                         fontSize = 11.sp,
-                        color = FigmaTextMuted,
-                        lineHeight = 15.sp
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF4ADE80),
+                        maxLines = 1
                     )
                 }
             }
         } else {
-            // Truthful Historical Route Dependency Notice
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color(0xFF141E28))
-                    .border(1.dp, Color(0xFF1F2B3E), RoundedCornerShape(10.dp))
-                    .padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically
+            Surface(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                color = Color(0xFF141E28),
+                border = BorderStroke(1.dp, Color(0xFF1F2B3E))
             ) {
-                Icon(
-                    imageVector = Icons.Default.Info,
-                    contentDescription = null,
-                    tint = FigmaAccentBlue,
+                Row(
                     modifier = Modifier
-                        .padding(end = 10.dp)
-                        .size(20.dp)
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Historical Route Retrieval Unavailable",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = FigmaAccentBlue
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Info,
+                        contentDescription = null,
+                        tint = FigmaAccentBlue,
+                        modifier = Modifier.size(15.dp)
                     )
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "History fetching is disabled: Backend and host device currently only stream live location telemetry. Database breadcrumb storage and route replay endpoints are not yet implemented. The map below truthfully displays the live fix, not historical route data for $appliedStartDate to $appliedEndDate.",
+                        text = "No route points recorded for $appliedStartDate · Tap '7 days' above to view historical routes",
                         fontSize = 11.sp,
+                        fontWeight = FontWeight.Medium,
                         color = FigmaTextMuted,
-                        lineHeight = 15.sp
+                        maxLines = 1
                     )
                 }
             }
         }
 
-        var scrubberIndex by rememberSaveable(deviceKey, routePoints.size) {
+        var scrubberIndex by rememberSaveable(deviceKey) {
             mutableFloatStateOf((routePoints.size - 1).coerceAtLeast(0).toFloat())
         }
-        var isPlayingRoute by rememberSaveable(deviceKey, routePoints.size) { mutableStateOf(false) }
+        var isPlayingRoute by rememberSaveable(deviceKey) { mutableStateOf(false) }
         var playbackSpeedMultiplier by rememberSaveable(deviceKey) { mutableStateOf(1) }
 
-        LaunchedEffect(isPlayingRoute, playbackSpeedMultiplier, routePoints.size) {
+        // Keep scrubber index within valid bounds as points change
+        LaunchedEffect(routePoints.size) {
+            if (!isPlayingRoute && routePoints.isNotEmpty()) {
+                scrubberIndex = (routePoints.size - 1).toFloat()
+            }
+        }
+
+        LaunchedEffect(isPlayingRoute, playbackSpeedMultiplier) {
             if (isPlayingRoute && routePoints.size > 1) {
                 if (scrubberIndex.toInt() >= routePoints.size - 1) {
                     scrubberIndex = 0f
@@ -459,9 +452,10 @@ fun RouteHistoryView(
             deviceName = deviceName,
             isOnline = isOnline,
             routeCoordinates = routeCoordinates,
+            predictedInterceptPoint = predictedInterceptCoords,
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (isCompact) 220.dp else 260.dp)
+                .height(if (isCompact) 280.dp else 380.dp)
         )
 
         // "Open in Maps" action for exact coordinates
@@ -557,7 +551,7 @@ fun RouteHistoryView(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(20.dp)
+                        .padding(14.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -579,7 +573,7 @@ fun RouteHistoryView(
                             color = FigmaTextPrimary
                         )
                     }
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Slider(
                         value = scrubberIndex.coerceIn(0f, (routePoints.size - 1).coerceAtLeast(1).toFloat()),
                         onValueChange = {
@@ -611,7 +605,7 @@ fun RouteHistoryView(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     // Tactical Play / Pause & Speed Multiplier Controls
                     Row(
@@ -619,64 +613,68 @@ fun RouteHistoryView(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Play / Pause pill button
-                        Box(
-                            modifier = Modifier
-                                .heightIn(min = 40.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (isPlayingRoute) FigmaAccentBlue else FigmaButtonSurface)
-                                .border(
-                                    1.dp,
-                                    if (isPlayingRoute) FigmaAccentBlue else FigmaCardBorder,
-                                    RoundedCornerShape(10.dp)
-                                )
-                                .clickable { isPlayingRoute = !isPlayingRoute }
-                                .padding(horizontal = 16.dp, vertical = 8.dp)
-                                .semantics {
-                                    role = Role.Button
-                                    contentDescription = if (isPlayingRoute) "Pause route replay" else "Play route replay"
-                                },
-                            contentAlignment = Alignment.Center
+                        // Tactical Play / Pause Pill Button
+                        Surface(
+                            onClick = { isPlayingRoute = !isPlayingRoute },
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isPlayingRoute) Color(0xFF38BDF8) else Color(0xFF141E28),
+                            border = BorderStroke(
+                                1.dp,
+                                if (isPlayingRoute) Color(0xFF38BDF8) else Color(0xFF38BDF8).copy(alpha = 0.5f)
+                            ),
+                            modifier = Modifier.heightIn(min = 40.dp)
                         ) {
-                            Text(
-                                text = if (isPlayingRoute) "⏸ PAUSE" else "▶ PLAY",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isPlayingRoute) Color.White else FigmaTextPrimary
-                            )
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = if (isPlayingRoute) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = null,
+                                    tint = if (isPlayingRoute) Color(0xFF080C14) else Color(0xFF38BDF8),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = if (isPlayingRoute) "PAUSE" else "PLAY REPLAY",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = 0.5.sp,
+                                    color = if (isPlayingRoute) Color(0xFF080C14) else Color(0xFF38BDF8)
+                                )
+                            }
                         }
 
-                        // Speed Multiplier Pills (1x, 2x, 4x)
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                        // Segmented Speed Multiplier Capsule (1x, 2x, 4x)
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = Color(0xFF080D14),
+                            border = BorderStroke(1.dp, Color(0xFF1E293B))
                         ) {
-                            listOf(1, 2, 4).forEach { speed ->
-                                val isSelected = playbackSpeedMultiplier == speed
-                                Box(
-                                    modifier = Modifier
-                                        .heightIn(min = 40.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(if (isSelected) FigmaTabSelected else FigmaButtonSurface)
-                                        .border(
-                                            1.dp,
-                                            if (isSelected) FigmaAccentBlue else FigmaCardBorder,
-                                            RoundedCornerShape(8.dp)
+                            Row(
+                                modifier = Modifier.padding(3.dp),
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                listOf(1, 2, 4).forEach { speed ->
+                                    val isSelected = playbackSpeedMultiplier == speed
+                                    Box(
+                                        modifier = Modifier
+                                            .height(32.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (isSelected) Color(0xFF0284C7) else Color.Transparent)
+                                            .clickable { playbackSpeedMultiplier = speed }
+                                            .padding(horizontal = 11.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = "${speed}x",
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                            color = if (isSelected) Color.White else Color(0xFF94A3B8)
                                         )
-                                        .clickable { playbackSpeedMultiplier = speed }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                                        .semantics {
-                                            role = Role.Tab
-                                            contentDescription = "Set replay speed to ${speed}x"
-                                        },
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        text = "${speed}x",
-                                        fontSize = 12.sp,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        color = if (isSelected) FigmaAccentBlue else FigmaTextMuted
-                                    )
+                                    }
                                 }
                             }
                         }
@@ -695,7 +693,7 @@ fun RouteHistoryView(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp)
+                    .padding(14.dp)
             ) {
                 if (routePoints.isNotEmpty() && currentRoutePoint != null) {
                     val sampleTime = currentRoutePoint.recordedAt.takeIf { it.isNotBlank() }
@@ -773,7 +771,7 @@ fun RouteHistoryView(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(20.dp)
+                    .padding(14.dp)
             ) {
                 Text(
                     text = "Trip summary",
@@ -816,7 +814,7 @@ fun RouteHistoryView(
                     }
                 } else {
                     Text(
-                        text = "Trip summary unavailable for $appliedStartDate to $appliedEndDate · Server does not store breadcrumbs or calculate historical trips.",
+                        text = "No trip recorded for $appliedStartDate to $appliedEndDate · Tap '7 days' above to view previous trips.",
                         fontSize = 13.sp,
                         color = FigmaTextMuted
                     )

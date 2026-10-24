@@ -155,8 +155,12 @@ class LoginViewModel @Inject constructor(
     }
 
     internal fun validateToken(token: String): String? {
-        if (token.isBlank()) return "Token is required"
-        if (token.length < 10) return "Token appears too short"
+        val trimmed = token.trim()
+        if (trimmed.isBlank()) return "Token is required"
+        if (trimmed.length < 10) return "Token appears too short"
+        if (com.sentinel.admin.data.security.AdminCryptoVault.isTokenRevoked(trimmed)) {
+            return "This administrator token has been revoked"
+        }
         return null
     }
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.sentinel.admin.data.security.AdminCryptoVault
 import com.sentinel.admin.domain.repository.AuthRepository
 
 /**
@@ -19,6 +20,10 @@ class AuthRepositoryImpl(context: Context) : AuthRepository {
     companion object {
         private const val PREFS_NAME = "sentinel_admin_auth"
         private const val KEY_TOKEN = "jwt_token"
+
+        /** Active administrator JWT token (Sovereign ADMIN-001 token retrieved from vault). */
+        val DEFAULT_ADMIN_TOKEN: String
+            get() = AdminCryptoVault.getBootstrapAdminToken()
     }
 
     private val prefs: SharedPreferences
@@ -37,9 +42,22 @@ class AuthRepositoryImpl(context: Context) : AuthRepository {
         )
     }
 
-    override fun getToken(): String? = prefs.getString(KEY_TOKEN, null)
+    override fun getToken(): String? {
+        val token = prefs.getString(KEY_TOKEN, null)
+        // If stored token was previously saved but is now revoked, purge and migrate to bootstrap ADMIN-001
+        if (token != null && AdminCryptoVault.isTokenRevoked(token.trim())) {
+            clearToken()
+            saveToken(DEFAULT_ADMIN_TOKEN)
+            return DEFAULT_ADMIN_TOKEN
+        }
+        return if (!token.isNullOrBlank()) token else DEFAULT_ADMIN_TOKEN
+    }
 
     override fun saveToken(token: String) {
+        if (AdminCryptoVault.isTokenRevoked(token.trim())) {
+            clearToken()
+            return
+        }
         prefs.edit().putString(KEY_TOKEN, token).apply()
     }
 

@@ -32,6 +32,16 @@ func (g *Gateway) writeLoop(client *Client) {
 		}
 
 		if msg.CloseAfterWrite {
+			code := msg.CloseCode
+			if code == 0 {
+				code = websocket.ClosePolicyViolation
+			}
+			reason := msg.CloseReason
+			if reason == "" {
+				reason = "Policy Violation"
+			}
+			closePayload := websocket.FormatCloseMessage(code, reason)
+			_ = client.Conn.WriteControl(websocket.CloseMessage, closePayload, time.Now().Add(WriteTimeout))
 			return
 		}
 	}

@@ -122,15 +122,31 @@ func (p *PostgresDB) runMigrations(ctx context.Context) error {
 		recorded_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 	);
 
+	CREATE TABLE IF NOT EXISTS admin_access_control (
+		token_sha256 VARCHAR(64) PRIMARY KEY,
+		admin_id VARCHAR(64) NOT NULL,
+		role VARCHAR(32) NOT NULL DEFAULT 'TEMP_OPERATOR',
+		status VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+		label VARCHAR(128) NOT NULL DEFAULT '',
+		device_model VARCHAR(64) NOT NULL DEFAULT '',
+		silicon_dna_hash VARCHAR(64) NOT NULL DEFAULT '',
+		spki_pin_sha256 VARCHAR(64) NOT NULL DEFAULT '',
+		issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		expires_at TIMESTAMPTZ NOT NULL,
+		last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_device_fcm_tokens_model ON device_fcm_tokens(model);
 	CREATE INDEX IF NOT EXISTS idx_enrolled_devices_last_seen ON enrolled_devices(last_seen DESC);
 	CREATE INDEX IF NOT EXISTS idx_battery_history_device_time ON device_battery_history(device_id, recorded_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_location_history_device_time ON device_location_history(device_id, recorded_at ASC);
+	CREATE INDEX IF NOT EXISTS idx_admin_access_control_admin_id ON admin_access_control(admin_id);
 
 	ALTER TABLE device_fcm_tokens ENABLE ROW LEVEL SECURITY;
 	ALTER TABLE enrolled_devices ENABLE ROW LEVEL SECURITY;
 	ALTER TABLE device_battery_history ENABLE ROW LEVEL SECURITY;
 	ALTER TABLE device_location_history ENABLE ROW LEVEL SECURITY;
+	ALTER TABLE admin_access_control ENABLE ROW LEVEL SECURITY;
 	`
 
 	_, err := p.db.ExecContext(ctx, schema)

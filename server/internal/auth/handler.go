@@ -49,3 +49,19 @@ func (h *Handler) Handle(ctx context.Context, message protocol.Message) (*Result
 		Response: response,
 	}, nil
 }
+
+// IsIdentityActive checks whether a connected device or admin identity is active.
+func (h *Handler) IsIdentityActive(identity string) bool {
+	if h == nil || h.service == nil {
+		return true
+	}
+	return h.service.IsIdentityActive(identity)
+}
+
+// Service returns the underlying auth service.
+func (h *Handler) Service() *Service {
+	if h == nil {
+		return nil
+	}
+	return h.service
+}

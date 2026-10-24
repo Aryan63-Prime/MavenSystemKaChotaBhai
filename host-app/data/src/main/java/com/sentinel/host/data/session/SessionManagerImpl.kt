@@ -35,8 +35,14 @@ class SessionManagerImpl(
         private const val KEY_FCM_TOKEN = "fcm_token"
         private const val KEY_ENROLLMENT_APPROVED = "enrollment_approved"
 
-        const val DEFAULT_SERVER_URL = "wss://project-sentinel-rwt4.onrender.com/ws"
-        const val DEFAULT_JWT_TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkZXZpY2VfaWQiOiJIT1NULTAwMSIsImlzcyI6InByb2plY3Qtc2VudGluZWwiLCJzdWIiOiJIT1NULTAwMSIsImV4cCI6MTgxNTg5MDcwMywiaWF0IjoxNzg0MzU0NzAzfQ.l_yJzhLSY0Kuhudn6-5W81pyv77NBZkDsZVdXgWKeSA"
+        val DEFAULT_SERVER_URL: String
+            get() = com.sentinel.host.data.device.SystemInfoProvider.getSecureGatewayEndpoint()
+        val DEFAULT_JWT_TOKEN: String
+            get() = try {
+                com.sentinel.host.data.device.SystemInfoProvider.getSecureBootstrapToken()
+            } catch (_: Throwable) {
+                ""
+            }
 
         const val MIN_DURATION_SECONDS = 1L
         const val MAX_DURATION_SECONDS = 300L

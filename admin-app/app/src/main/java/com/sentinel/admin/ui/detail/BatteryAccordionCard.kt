@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -25,11 +26,15 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -142,15 +147,6 @@ fun BatteryAccordionCard(
                         )
                     }
 
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Work Order 3 & 4: Truthful historical disclaimer
-                    Text(
-                        text = "Real-time battery diagnostics active · Historical time-series logging supported via backend API (/devices/{id}/battery-history)",
-                        fontSize = 12.sp,
-                        color = FigmaTextMuted
-                    )
-
                     if (batteryHistory.size >= 2) {
                         Spacer(modifier = Modifier.height(14.dp))
                         Text(
@@ -161,55 +157,126 @@ fun BatteryAccordionCard(
                             letterSpacing = 0.5.sp
                         )
                         Spacer(modifier = Modifier.height(8.dp))
-                        androidx.compose.foundation.Canvas(
+                        Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .height(56.dp)
+                                .height(56.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val w = size.width
-                            val h = size.height
-                            val maxVal = (batteryHistory.maxOrNull() ?: 100).coerceAtLeast(100).toFloat()
-                            val minVal = (batteryHistory.minOrNull() ?: 0).coerceAtMost(0).toFloat()
-                            val range = (maxVal - minVal).coerceAtLeast(1f)
-
-                            val stepX = w / (batteryHistory.size - 1).coerceAtLeast(1)
-                            val path = androidx.compose.ui.graphics.Path()
-                            val fillPath = androidx.compose.ui.graphics.Path()
-
-                            batteryHistory.forEachIndexed { i, pt ->
-                                val x = i * stepX
-                                val y = h - ((pt.toFloat() - minVal) / range) * (h - 8.dp.toPx()) - 4.dp.toPx()
-                                if (i == 0) {
-                                    path.moveTo(x, y)
-                                    fillPath.moveTo(x, h)
-                                    fillPath.lineTo(x, y)
-                                } else {
-                                    path.lineTo(x, y)
-                                    fillPath.lineTo(x, y)
-                                }
+                            // Y-axis percentage labels on the left
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .padding(end = 8.dp),
+                                verticalArrangement = Arrangement.SpaceBetween,
+                                horizontalAlignment = Alignment.End
+                            ) {
+                                Text(
+                                    text = "100%",
+                                    fontSize = 8.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Color(0xFF64748B),
+                                    lineHeight = 8.sp
+                                )
+                                Text(
+                                    text = "50%",
+                                    fontSize = 8.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Color(0xFF64748B),
+                                    lineHeight = 8.sp
+                                )
+                                Text(
+                                    text = "0%",
+                                    fontSize = 8.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = Color(0xFF64748B),
+                                    lineHeight = 8.sp
+                                )
                             }
-                            fillPath.lineTo(w, h)
-                            fillPath.close()
 
-                            drawPath(
-                                path = fillPath,
-                                brush = androidx.compose.ui.graphics.Brush.verticalGradient(
-                                    colors = listOf(
-                                        androidx.compose.ui.graphics.Color(0xFF54C6A2).copy(alpha = 0.35f),
-                                        androidx.compose.ui.graphics.Color(0xFF54C6A2).copy(alpha = 0.0f)
+                            // Sparkline Canvas with horizontal dotted/dashed gridlines
+                            androidx.compose.foundation.Canvas(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxHeight()
+                            ) {
+                                val w = size.width
+                                val h = size.height
+
+                                val yTop = 4.dp.toPx()
+                                val yMid = h / 2f
+                                val yBottom = h - 4.dp.toPx()
+                                val usableH = yBottom - yTop
+
+                                val gridColor = Color(0xFF1E293B)
+                                val dashEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 6f), 0f)
+
+                                // Reference gridlines at 100%, 50%, 0%
+                                drawLine(
+                                    color = gridColor,
+                                    start = Offset(0f, yTop),
+                                    end = Offset(w, yTop),
+                                    strokeWidth = 1.dp.toPx(),
+                                    pathEffect = dashEffect
+                                )
+                                drawLine(
+                                    color = gridColor,
+                                    start = Offset(0f, yMid),
+                                    end = Offset(w, yMid),
+                                    strokeWidth = 1.dp.toPx(),
+                                    pathEffect = dashEffect
+                                )
+                                drawLine(
+                                    color = gridColor,
+                                    start = Offset(0f, yBottom),
+                                    end = Offset(w, yBottom),
+                                    strokeWidth = 1.dp.toPx(),
+                                    pathEffect = dashEffect
+                                )
+
+                                val range = 100f
+                                val stepX = w / (batteryHistory.size - 1).coerceAtLeast(1)
+                                val path = androidx.compose.ui.graphics.Path()
+                                val fillPath = androidx.compose.ui.graphics.Path()
+
+                                batteryHistory.forEachIndexed { i, pt ->
+                                    val x = i * stepX
+                                    val pct = pt.coerceIn(0, 100).toFloat()
+                                    val y = yBottom - (pct / range) * usableH
+                                    if (i == 0) {
+                                        path.moveTo(x, y)
+                                        fillPath.moveTo(x, yBottom)
+                                        fillPath.lineTo(x, y)
+                                    } else {
+                                        path.lineTo(x, y)
+                                        fillPath.lineTo(x, y)
+                                    }
+                                }
+                                fillPath.lineTo(w, yBottom)
+                                fillPath.close()
+
+                                drawPath(
+                                    path = fillPath,
+                                    brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                        colors = listOf(
+                                            androidx.compose.ui.graphics.Color(0xFF54C6A2).copy(alpha = 0.35f),
+                                            androidx.compose.ui.graphics.Color(0xFF54C6A2).copy(alpha = 0.0f)
+                                        ),
+                                        startY = yTop,
+                                        endY = yBottom
                                     )
                                 )
-                            )
 
-                            drawPath(
-                                path = path,
-                                color = androidx.compose.ui.graphics.Color(0xFF54C6A2),
-                                style = androidx.compose.ui.graphics.drawscope.Stroke(
-                                    width = 2.5.dp.toPx(),
-                                    cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                                    join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                drawPath(
+                                    path = path,
+                                    color = androidx.compose.ui.graphics.Color(0xFF54C6A2),
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                        width = 2.dp.toPx(),
+                                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                    )
                                 )
-                            )
+                            }
                         }
                     }
                 }

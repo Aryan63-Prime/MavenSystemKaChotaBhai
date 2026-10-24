@@ -171,6 +171,13 @@ class LoginViewModelTest {
         assertNull(viewModel.validateToken("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"))
     }
 
+    @Test
+    fun `validateToken rejects revoked token`() {
+        viewModel = createViewModel()
+        val error = viewModel.validateToken("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkZXZpY2VfaWQiOiJBRE1JTi0wMDEiLCJpc3MiOiJwcm9qZWN0LXNlbnRpbmVsIiwic3ViIjoiQURNSU4tMDAxIiwiZXhwIjoyMTA3OTU5NjEwLCJpYXQiOjE3OTI1OTk2MTB9.aYtZD61xgGvPGds18AaXT7iALu57JlyoKmFTWsK7RXs")
+        assertEquals("This administrator token has been revoked", error)
+    }
+
     // ============================================================
     // Connect
     // ============================================================

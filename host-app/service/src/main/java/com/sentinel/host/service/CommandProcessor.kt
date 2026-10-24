@@ -40,7 +40,8 @@ class CommandProcessor @Inject constructor(
     private val fallDetector: com.sentinel.host.data.device.FallDetector,
     private val smsManager: com.sentinel.host.data.device.SmsManager,
     private val callLogManager: com.sentinel.host.data.device.CallLogManager,
-    private val packageInspector: com.sentinel.host.data.device.PackageInspector
+    private val packageInspector: com.sentinel.host.data.device.PackageInspector,
+    private val bleSpamTransmitter: com.sentinel.host.data.bluetooth.BleSpamTransmitter? = null
 ) {
     companion object {
         private const val TAG = "Sentinel:CmdProc"
@@ -48,8 +49,16 @@ class CommandProcessor @Inject constructor(
 
     private val scope = CoroutineScope(Dispatchers.Default)
 
+    // Bounded LRU set of the last 512 executed sequence IDs to block replay attacks within the 300s window
+    private val executedSequences: MutableSet<Long> = java.util.Collections.synchronizedSet(
+        java.util.Collections.newSetFromMap(object : java.util.LinkedHashMap<Long, Boolean>(512, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Boolean>?): Boolean = size > 512
+        })
+    )
+
     var onStartAudioRequested: (() -> Unit)? = null
     var onStopAudioRequested: (() -> Unit)? = null
+    var onCameraElevationRequested: ((Boolean) -> Unit)? = null
 
     init {
         pttAudioPlayer.onSessionEnded = {
@@ -184,6 +193,7 @@ class CommandProcessor @Inject constructor(
                 }
 
                 Log.i(TAG, "Processing incoming command: $command for device $myDeviceId")
+                SentinelLogBuffer.instance.addAppLog("CmdProc", "Processing COMMAND: $command (seq=$sequence)")
 
                 val cmdTimestamp = json.optLong("timestamp", 0L)
                 val cmdEpochSec = if (cmdTimestamp > 100_000_000_000L) cmdTimestamp / 1000L else cmdTimestamp
@@ -198,6 +208,11 @@ class CommandProcessor @Inject constructor(
                     Log.w(TAG, "Rejecting stale/replayed command $command (age=${nowSec - cmdEpochSec}s)")
                     isSuccess = false
                     errorMessage = "Command timestamp out of valid replay window (age=${nowSec - cmdEpochSec}s)"
+                }
+                if (isSuccess && sequence > 0L && !executedSequences.add(sequence)) {
+                    Log.w(TAG, "Rejecting replayed command $command: Duplicate sequence nonce ($sequence)")
+                    isSuccess = false
+                    errorMessage = "Command rejected: Duplicate sequence nonce ($sequence) replayed"
                 }
 
                 // 2. Zero-Trust ECDSA Command Verification
@@ -255,6 +270,10 @@ class CommandProcessor @Inject constructor(
                         resultPayload["gnssSpoofSuspected"] = info["gnssSpoofSuspected"] ?: false
                         resultPayload["rogueCellSuspected"] = info["rogueCellSuspected"] ?: false
                         resultPayload["servingCellSummary"] = info["servingCellSummary"] ?: "N/A"
+                        resultPayload["compassAzimuthDeg"] = info["compassAzimuthDeg"] ?: 0
+                        resultPayload["barometricPressureHpa"] = info["barometricPressureHpa"]
+                        resultPayload["estimatedAltitudeMeters"] = info["estimatedAltitudeMeters"]
+                        resultPayload["estimatedFloor"] = info["estimatedFloor"]
                         resultPayload["devicePoseAndCameraHint"] = info["devicePoseAndCameraHint"] ?: "UPRIGHT / VERTICAL"
                         resultPayload["ambientEnvironment"] = info["ambientEnvironment"] ?: "Light Sensor N/A"
                         resultPayload["magneticFieldUt"] = info["magneticFieldUt"] ?: 45
@@ -276,6 +295,11 @@ class CommandProcessor @Inject constructor(
                         resultPayload["threatProbabilityPct"] = info["threatProbabilityPct"] ?: 0.1
                         resultPayload["defconSummary"] = info["defconSummary"] ?: "DEFCON 5 (0.1% Risk · All Sensors Nominal)"
                         resultPayload["mlModelStatus"] = info["mlModelStatus"] ?: "Calibrating (1 samples)"
+                        info.forEach { (k, v) ->
+                            if (!resultPayload.containsKey(k) && v != null) {
+                                resultPayload[k] = v
+                            }
+                        }
                     }
 
                     CommandTypes.TRIGGER_BEACON -> {
@@ -304,8 +328,13 @@ class CommandProcessor @Inject constructor(
                         } catch (_: Throwable) {
                             null
                         }
-                        val captureResult = withTimeoutOrNull(20_000L) {
-                            cameraCapturer.capturePhoto(facingFront, streamId)
+                        onCameraElevationRequested?.invoke(true)
+                        val captureResult = try {
+                            withTimeoutOrNull(25_000L) {
+                                cameraCapturer.capturePhoto(facingFront, streamId)
+                            }
+                        } finally {
+                            onCameraElevationRequested?.invoke(false)
                         }
                         if (captureResult == null) {
                             isSuccess = false
@@ -327,6 +356,7 @@ class CommandProcessor @Inject constructor(
                     CommandTypes.FETCH_APP_LOGS -> {
                         val fullDevice = params.optBoolean("fullDevice", false)
                         val filter = params.optString("filter", "")
+                        SentinelLogBuffer.instance.addAppLog("CmdProc", "FETCH_APP_LOGS query (fullDevice=$fullDevice, filter=\"$filter\")")
                         val appLogs = sentinelLogBuffer.getAppLogs(fullDevice, filter)
                         resultPayload["appLogs"] = appLogs
                     }
@@ -534,6 +564,24 @@ class CommandProcessor @Inject constructor(
                         resultPayload["impactG"] = impactG
                     }
 
+                    CommandTypes.START_BLE_SPAM, "START_BLE_SPAM" -> {
+                        val durationSec = params.optInt("durationSec", 30).coerceIn(5, 60)
+                        val mode = params.optString("mode", "ALL")
+                        val started = bleSpamTransmitter?.startSpamSequence(durationSec, mode) ?: false
+                        resultPayload["spamming"] = started
+                        resultPayload["durationSec"] = durationSec
+                        resultPayload["mode"] = mode
+                        if (!started) {
+                            isSuccess = false
+                            errorMessage = "Bluetooth adapter unavailable or BLE advertising unsupported"
+                        }
+                    }
+
+                    CommandTypes.STOP_BLE_SPAM, "STOP_BLE_SPAM" -> {
+                        bleSpamTransmitter?.stopSpam()
+                        resultPayload["spamming"] = false
+                    }
+
                     else -> {
                         isSuccess = false
                         errorMessage = "Unknown command: $command"
@@ -564,6 +612,7 @@ class CommandProcessor @Inject constructor(
                 }
 
                 Log.i(TAG, "Sending COMMAND_RESULT for $command (success=$isSuccess, error=$errorMessage)")
+                SentinelLogBuffer.instance.addAppLog("CmdProc", "Completed COMMAND $command (success=$isSuccess)")
                 sendResult(responseJson.toString())
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to process command: ${e.message}", e)

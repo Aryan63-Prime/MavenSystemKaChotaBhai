@@ -216,6 +216,11 @@ open class AdminSupervisor(
 
             is ConnectionEvent.ServerError -> {
                 Log.w(TAG, "Server error: code=${event.code}, msg=${event.message}")
+                if (event.code == 401) {
+                    heartbeatScheduler.stop()
+                    _connectionState.value = ConnectionState.Error("Unauthorized — invalid or expired token")
+                    return
+                }
                 if (event.code in 400..499) {
                     // Application-level error (e.g. 404 command target offline); do not teardown transport
                     return
@@ -261,6 +266,8 @@ open class AdminSupervisor(
             _connectionState.value = ConnectionState.Error("No auth token")
             return
         }
+
+        Log.i("Sentinel:AdminAuth", "Sending AUTH frame (length=${token.length})")
 
         val sequence = sequenceGenerator.next()
         val message = messageSerializer.serializeAuth(token, sequence)

@@ -55,6 +55,9 @@ func Build() (*app.Application, error) {
 	}
 
 	authService := auth.New(cfg.JWT.Secret)
+	if pgDB != nil {
+		authService.SetDatabase(pgDB.DB())
+	}
 	authHandler := auth.NewHandler(authService)
 	deviceService := device.NewServiceWithRepository(deviceRepo)
 	deviceHandler := device.NewHandler(deviceService)
@@ -112,10 +115,20 @@ func Build() (*app.Application, error) {
 		adminService.SetFcmService(fcmService)
 	}
 	adminHandler := admin.NewHandler(adminService, authService)
+	adminHandler.SetAuthService(authService)
+	adminHandler.SetWsDisconnector(gw)
 	metricsHandler := metrics.NewHandler(gw.MetricsCollector(), authService)
 	gw.HandleFunc("/metrics", metricsHandler.ServeHTTP)
 	gw.HandleFunc("/devices", adminHandler.ListDevices)
 	gw.HandleFunc("/devices/", adminHandler.RouteDevice)
+	gw.HandleFunc("/admin/iam/list", adminHandler.HandleAdminIAMList)
+	gw.HandleFunc("/admin/iam", adminHandler.HandleAdminIAM)
+	gw.HandleFunc("/admin/iam/", adminHandler.HandleAdminIAM)
+	gw.HandleFunc("/admin/iam/issue", adminHandler.HandleAdminIAMIssue)
+	gw.HandleFunc("/admin/iam/suspend", adminHandler.HandleAdminIAMSuspend)
+	gw.HandleFunc("/admin/iam/activate", adminHandler.HandleAdminIAMActivate)
+	gw.HandleFunc("/admin/iam/revoke", adminHandler.HandleAdminIAMRevoke)
+	gw.HandleFunc("/admin/iam/status", adminHandler.HandleAdminIAMStatus)
 
 	application := &app.Application{
 		Config:  cfg,

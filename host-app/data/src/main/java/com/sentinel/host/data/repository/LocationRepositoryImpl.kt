@@ -31,21 +31,5 @@ class LocationRepositoryImpl(
         if (!sent) {
             offlineBuffer?.bufferLocation(location)
         }
-
-        // Also broadcast dedicated telemetry report with hardware identity to bypass generic server merging
-        try {
-            val devInfo = deviceRepository?.getDeviceInfo()
-            val model = devInfo?.model ?: android.os.Build.MODEL ?: "Unknown"
-            val deviceId = devInfo?.deviceId ?: "HOST-001"
-            val callsign = devInfo?.callsign ?: ""
-            val uniqueKey = if (callsign.isNotBlank()) "${deviceId}_$callsign" else "${deviceId}_$model"
-            val hardwareId = devInfo?.hardwareId ?: ""
-            val ts = System.currentTimeMillis() / 1000
-            val seq = sequenceGenerator.next()
-            val telemetryJson = """{"type":"COMMAND_RESULT","version":1,"timestamp":$ts,"sequence":$seq,"data":{"command":"TELEMETRY_REPORT","success":true,"payload":{"deviceId":"$deviceId","model":"$model","callsign":"$callsign","hardwareId":"$hardwareId","uniqueKey":"$uniqueKey","latitude":${location.latitude},"longitude":${location.longitude},"accuracy":${location.accuracy},"battery":${location.battery},"network":"${location.network}","timestamp":${System.currentTimeMillis()}}}}"""
-            connectionRepository.sendText(telemetryJson)
-        } catch (_: Exception) {
-            // Non-critical telemetry broadcast failure
-        }
     }
 }

@@ -52,8 +52,11 @@ class WebSocketDataSource(private val client: OkHttpClient) {
     fun connect(url: String) {
         val current = _state.value
         if (current is WebSocketState.Connecting || current is WebSocketState.Connected) {
-            Log.w(TAG, "connect() called in state $current, ignoring")
-            return
+            Log.i(TAG, "connect() called in state $current, resetting connection")
+            try {
+                webSocket?.close(NORMAL_CLOSURE, CLOSE_REASON)
+            } catch (_: Exception) {}
+            webSocket = null
         }
 
         Log.i(TAG, "Connecting to $url")

@@ -88,6 +88,11 @@ func (g *Gateway) GetConnectionIDByDeviceID(deviceID string) (string, bool) {
 	return snapshot.ConnectionID, true
 }
 
+// DisconnectAdminIdentity terminates WebSocket sessions matching adminID.
+func (g *Gateway) DisconnectAdminIdentity(adminID string, reason string) int {
+	return g.manager.DisconnectAdminIdentity(adminID, reason)
+}
+
 func (g *Gateway) registerRoutes() {
 
 	g.mux.HandleFunc("/health", g.health)

@@ -56,7 +56,7 @@ class SecuritySettingsMonitor @Inject constructor(
 
         val isUsbConnected = usbIntent?.getBooleanExtra("connected", false) ?: false
         val isUsbConfigured = usbIntent?.getBooleanExtra("configured", false) ?: false
-        val isUsbAdbActive = usbIntent?.getBooleanExtra("adb", false) ?: false
+        val isUsbAdbActive = isUsbConnected && (usbIntent?.getBooleanExtra("adb", false) ?: false)
 
         val isWirelessAdbEnabled = try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

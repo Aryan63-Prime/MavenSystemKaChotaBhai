@@ -586,6 +586,71 @@ class DeviceDetailViewModelTest {
         assertNull(viewModel.uiState.value.commandStatusMessage)
     }
 
+    @Test
+    fun `computeKalmanKinematicPrediction calculates projected coordinates when moving`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val loc = DeviceLocation(
+            deviceId = "HOST-0001",
+            latitude = 28.6139,
+            longitude = 77.2090,
+            accuracy = 5.0,
+            battery = 80,
+            network = "5G",
+            recordedAt = "2026-07-09T12:00:00Z"
+        )
+        val prediction = viewModel.computeKalmanKinematicPrediction(
+            currentLoc = loc,
+            routePoints = emptyList(),
+            azimuthDeg = 90,
+            motionActivity = "IN_VEHICLE (60 km/h)"
+        )
+
+        assertNotNull(prediction.coords)
+        assertTrue(prediction.summary?.contains("+15m Project") == true)
+        val coords = viewModel.computeInterceptCoordinates(
+            currentLoc = loc,
+            routePoints = emptyList(),
+            azimuthDeg = 90,
+            motionActivity = "IN_VEHICLE (60 km/h)"
+        )
+        assertNotNull(coords)
+        assertEquals(prediction.coords, coords)
+    }
+
+    @Test
+    fun `computeKalmanKinematicPrediction returns null coordinates when stationary`() = runTest(testDispatcher) {
+        val viewModel = createViewModel()
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val loc = DeviceLocation(
+            deviceId = "HOST-0001",
+            latitude = 28.6139,
+            longitude = 77.2090,
+            accuracy = 5.0,
+            battery = 80,
+            network = "5G",
+            recordedAt = "2026-07-09T12:00:00Z"
+        )
+        val prediction = viewModel.computeKalmanKinematicPrediction(
+            currentLoc = loc,
+            routePoints = emptyList(),
+            azimuthDeg = 90,
+            motionActivity = "STATIONARY (0 km/h)"
+        )
+
+        assertNull(prediction.coords)
+        assertTrue(prediction.summary?.contains("Holding Position") == true)
+        val coords = viewModel.computeInterceptCoordinates(
+            currentLoc = loc,
+            routePoints = emptyList(),
+            azimuthDeg = 90,
+            motionActivity = "STATIONARY (0 km/h)"
+        )
+        assertNull(coords)
+    }
+
     // ============================================================
     // Test data
     // ============================================================

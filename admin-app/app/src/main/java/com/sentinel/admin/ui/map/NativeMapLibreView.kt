@@ -180,6 +180,7 @@ fun NativeMapLibreView(
     isOnline: Boolean = true,
     config: MapProviderConfig = defaultMapProvider,
     routeCoordinates: List<Pair<Double, Double>> = emptyList(),
+    predictedInterceptPoint: Pair<Double, Double>? = null,
     modifier: Modifier = Modifier
 ) {
     if (!isValidCoordinate(latitude, longitude)) {
@@ -220,6 +221,7 @@ fun NativeMapLibreView(
 
     var maplibreMapInstance by remember { mutableStateOf<MapLibreMap?>(null) }
     var markerInstance by remember { mutableStateOf<Marker?>(null) }
+    var interceptMarkerInstance by remember { mutableStateOf<Marker?>(null) }
     var isDisposed by remember { mutableStateOf(false) }
 
     val styleOwner = remember { StyleAttemptOwner() }
@@ -288,6 +290,7 @@ fun NativeMapLibreView(
     val currentLon by rememberUpdatedState(lon)
     val currentDeviceName by rememberUpdatedState(deviceName)
     val currentAccuracy by rememberUpdatedState(accuracyMeters)
+    val currentInterceptPoint by rememberUpdatedState(predictedInterceptPoint)
 
     fun renderLatestMarker(map: MapLibreMap) {
         val targetPos = LatLng(currentLat, currentLon)
@@ -305,6 +308,30 @@ fun NativeMapLibreView(
         }
     }
 
+    fun renderInterceptMarker(map: MapLibreMap) {
+        val point = currentInterceptPoint
+        if (point != null && isValidCoordinate(point.first, point.second)) {
+            val targetPos = LatLng(point.first, point.second)
+            interceptMarkerInstance?.let { marker ->
+                marker.position = targetPos
+                marker.title = "🎯 +15m Projected Intercept"
+            } ?: run {
+                interceptMarkerInstance = map.addMarker(
+                    MarkerOptions()
+                        .position(targetPos)
+                        .title("🎯 +15m Projected Intercept")
+                )
+            }
+        } else {
+            interceptMarkerInstance?.let { marker ->
+                try {
+                    map.removeMarker(marker)
+                } catch (_: Exception) {}
+                interceptMarkerInstance = null
+            }
+        }
+    }
+
     var lastAdvisoryError by remember { mutableStateOf<String?>(null) }
 
     // Style attempt ownership: triggered only by map readiness, style URL changes, or explicit Retry
@@ -318,8 +345,11 @@ fun NativeMapLibreView(
                 styleState = MapStyleState.Ready
                 map.clear()
                 markerInstance = null
+                interceptMarkerInstance = null
                 renderLatestMarker(map)
+                renderInterceptMarker(map)
                 updateRoutePolyline(style, routeCoordinates)
+                updateInterceptVector(style, currentLat, currentLon, currentInterceptPoint)
             }
         }
 
@@ -338,6 +368,17 @@ fun NativeMapLibreView(
         if (styleState is MapStyleState.Ready) {
             map.getStyle { style ->
                 updateRoutePolyline(style, routeCoordinates)
+            }
+        }
+    }
+
+    // Dynamic Intercept Vector and Marker sync
+    LaunchedEffect(currentInterceptPoint, currentLat, currentLon, maplibreMapInstance, styleState) {
+        val map = maplibreMapInstance ?: return@LaunchedEffect
+        if (styleState is MapStyleState.Ready) {
+            renderInterceptMarker(map)
+            map.getStyle { style ->
+                updateInterceptVector(style, currentLat, currentLon, currentInterceptPoint)
             }
         }
     }
@@ -1035,6 +1076,8 @@ private fun InvalidCoordinatesCard(
 
 private const val ROUTE_SOURCE_ID = "sentinel-route-source"
 private const val ROUTE_LAYER_ID = "sentinel-route-layer"
+private const val INTERCEPT_SOURCE_ID = "sentinel-intercept-source"
+private const val INTERCEPT_LAYER_ID = "sentinel-intercept-layer"
 
 private fun updateRoutePolyline(style: org.maplibre.android.maps.Style?, coords: List<Pair<Double, Double>>) {
     if (style == null || !style.isFullyLoaded) return
@@ -1076,5 +1119,55 @@ private fun updateRoutePolyline(style: org.maplibre.android.maps.Style?, coords:
         }
     } catch (e: Exception) {
         android.util.Log.w("Sentinel:MapLibre", "Failed to render route polyline: ${e.message}")
+    }
+}
+
+private fun updateInterceptVector(
+    style: org.maplibre.android.maps.Style?,
+    currentLat: Double,
+    currentLon: Double,
+    interceptPoint: Pair<Double, Double>?
+) {
+    if (style == null || !style.isFullyLoaded) return
+    try {
+        if (interceptPoint == null || !isValidCoordinate(interceptPoint.first, interceptPoint.second)) {
+            if (style.getLayer(INTERCEPT_LAYER_ID) != null) {
+                style.removeLayer(INTERCEPT_LAYER_ID)
+            }
+            if (style.getSource(INTERCEPT_SOURCE_ID) != null) {
+                style.removeSource(INTERCEPT_SOURCE_ID)
+            }
+            return
+        }
+
+        val points = listOf(
+            Point.fromLngLat(currentLon, currentLat),
+            Point.fromLngLat(interceptPoint.second, interceptPoint.first)
+        )
+        val lineString = LineString.fromLngLats(points)
+
+        val existingSource = style.getSourceAs<GeoJsonSource>(INTERCEPT_SOURCE_ID)
+        if (existingSource != null) {
+            existingSource.setGeoJson(lineString)
+        } else {
+            val source = GeoJsonSource(INTERCEPT_SOURCE_ID, lineString)
+            style.addSource(source)
+        }
+
+        if (style.getLayer(INTERCEPT_LAYER_ID) == null) {
+            val lineLayer = LineLayer(INTERCEPT_LAYER_ID, INTERCEPT_SOURCE_ID).apply {
+                setProperties(
+                    PropertyFactory.lineColor(android.graphics.Color.parseColor("#F59E0B")),
+                    PropertyFactory.lineWidth(3.0f),
+                    PropertyFactory.lineOpacity(0.85f),
+                    PropertyFactory.lineDasharray(arrayOf(3f, 3f)),
+                    PropertyFactory.lineCap(Property.LINE_CAP_ROUND),
+                    PropertyFactory.lineJoin(Property.LINE_JOIN_ROUND)
+                )
+            }
+            style.addLayer(lineLayer)
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("Sentinel:MapLibre", "Failed to render intercept vector: ${e.message}")
     }
 }

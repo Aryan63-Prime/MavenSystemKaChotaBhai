@@ -51,6 +51,7 @@ type Dispatcher struct {
 	command     *command.Handler
 	broadcaster Broadcaster
 	fcm         FcmRegistrar
+	popVerifier *auth.HardwarePopVerifier
 }
 
 type FcmRegistrar interface {
@@ -66,13 +67,19 @@ func New(
 	fileHandler *file.Handler,
 ) *Dispatcher {
 	return &Dispatcher{
-		auth:      authHandler,
-		device:    deviceHandler,
-		heartbeat: heartbeatHandler,
-		location:  locationHandler,
-		audio:     audioHandler,
-		file:      fileHandler,
+		auth:        authHandler,
+		device:      deviceHandler,
+		heartbeat:   heartbeatHandler,
+		location:    locationHandler,
+		audio:       audioHandler,
+		file:        fileHandler,
+		popVerifier: auth.GetDefaultPopVerifier(),
 	}
+}
+
+// SetPopVerifier configures the hardware PoP verifier.
+func (d *Dispatcher) SetPopVerifier(v *auth.HardwarePopVerifier) {
+	d.popVerifier = v
 }
 
 // SetBroadcaster configures the admin broadcast target.
@@ -117,6 +124,21 @@ func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte)
 	if !session.IsAuthenticated() {
 		return Result{
 			Message: protocol.NewError(message.Sequence, 401, "Unauthorized"),
+		}
+	}
+
+	// Command-Target Gating: Verify admin identity is currently active.
+	// If an admin identity was suspended or revoked while the WebSocket is open, immediately terminate.
+	if session.IsAdmin() {
+		adminID := session.DeviceID()
+		if adminID == "" {
+			adminID = session.AuthenticatedDeviceID()
+		}
+		if d.auth != nil && !d.auth.IsIdentityActive(adminID) {
+			return Result{
+				Message:         protocol.NewError(message.Sequence, 403, "Admin identity suspended or revoked"),
+				CloseConnection: true,
+			}
 		}
 	}
 
@@ -265,8 +287,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte)
 		if d.command == nil {
 			return Result{Message: protocol.NewError(message.Sequence, 500, "Command handler not configured")}
 		}
+		d.enrichTelemetryCommandResult(session, &message)
 		err := d.command.HandleCommandResult(ctx, session, message)
 		return d.dispatchWithErrors(nil, err, message.Sequence)
+
+	case "TELEMETRY_REPORT":
+		d.enrichTelemetryDirect(session, &message)
+		if d.broadcaster != nil {
+			rawMsg, err := json.Marshal(message)
+			if err == nil {
+				d.broadcaster.BroadcastToAdmins(rawMsg)
+			}
+		}
+		return Result{Message: nil}
 
 	case protocol.TypeStop:
 		response, err := d.dispatchStop(ctx, session, message)
@@ -471,4 +504,67 @@ func strPtr(s string) *string {
 		return nil
 	}
 	return &s
+}
+
+func (d *Dispatcher) enrichTelemetryCommandResult(session Session, msg *protocol.Message) {
+	if msg == nil || len(msg.Data) == 0 {
+		return
+	}
+	var cmdRes protocol.CommandResultMessage
+	if err := msg.DecodeData(&cmdRes); err != nil {
+		return
+	}
+	if cmdRes.Command != "TELEMETRY_REPORT" {
+		return
+	}
+
+	deviceID := session.DeviceID()
+	if deviceID == "" {
+		deviceID = session.AuthenticatedDeviceID()
+	}
+	if cmdRes.DeviceID == "" {
+		cmdRes.DeviceID = deviceID
+	}
+	if cmdRes.Payload == nil {
+		cmdRes.Payload = make(map[string]interface{})
+	}
+
+	verifier := d.popVerifier
+	if verifier == nil {
+		verifier = auth.GetDefaultPopVerifier()
+	}
+	res := verifier.VerifyTelemetryPop(deviceID, cmdRes.Payload)
+	cmdRes.Payload["serverPopVerified"] = res.Verified
+	cmdRes.Payload["serverPopStatus"] = res.Status
+
+	if enrichedData, err := json.Marshal(cmdRes); err == nil {
+		msg.Data = enrichedData
+	}
+}
+
+func (d *Dispatcher) enrichTelemetryDirect(session Session, msg *protocol.Message) {
+	if msg == nil || len(msg.Data) == 0 {
+		return
+	}
+	var payload map[string]interface{}
+	if err := msg.DecodeData(&payload); err != nil || payload == nil {
+		payload = make(map[string]interface{})
+	}
+
+	deviceID := session.DeviceID()
+	if deviceID == "" {
+		deviceID = session.AuthenticatedDeviceID()
+	}
+
+	verifier := d.popVerifier
+	if verifier == nil {
+		verifier = auth.GetDefaultPopVerifier()
+	}
+	res := verifier.VerifyTelemetryPop(deviceID, payload)
+	payload["serverPopVerified"] = res.Verified
+	payload["serverPopStatus"] = res.Status
+
+	if enrichedData, err := json.Marshal(payload); err == nil {
+		msg.Data = enrichedData
+	}
 }

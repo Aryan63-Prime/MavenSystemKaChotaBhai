@@ -1335,8 +1335,10 @@ class AdminPresentationRegressionTest {
     @Test
     fun `Pass7 Test 12 DetailTab enumeration and layout-aware bring-into-view mapping`() {
         val tabs = DetailTab.entries
-        assertEquals(3, tabs.size)
+        assertEquals(5, tabs.size)
         assertTrue(tabs.contains(DetailTab.TELEMETRY))
+        assertTrue(tabs.contains(DetailTab.NETWORKINT))
+        assertTrue(tabs.contains(DetailTab.KALIINT))
         assertTrue(tabs.contains(DetailTab.ROUTE))
         assertTrue(tabs.contains(DetailTab.MEDIA))
 
@@ -1344,6 +1346,8 @@ class AdminPresentationRegressionTest {
         val labels = tabs.map { it.label }
         assertEquals(tabs.size, labels.distinct().size)
         assertEquals("Telemetry", DetailTab.TELEMETRY.label)
+        assertEquals("NetworkINT", DetailTab.NETWORKINT.label)
+        assertEquals("KaliInt", DetailTab.KALIINT.label)
         assertEquals("Route", DetailTab.ROUTE.label)
         assertEquals("Media", DetailTab.MEDIA.label)
     }

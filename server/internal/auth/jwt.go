@@ -41,12 +41,17 @@ func Validate(tokenString string, secret string) (*Claims, error) {
 
 // GenerateToken mints a signed HS256 JWT for a device with 10-year validity.
 func GenerateToken(deviceID string, secret string) (string, error) {
+	return GenerateTokenWithTTL(deviceID, secret, 10*365*24*time.Hour)
+}
+
+// GenerateTokenWithTTL mints a signed HS256 JWT with custom TTL duration.
+func GenerateTokenWithTTL(deviceID string, secret string, ttl time.Duration) (string, error) {
 	now := time.Now()
 	claims := Claims{
 		DeviceID: deviceID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			IssuedAt:  jwt.NewNumericDate(now),
-			ExpiresAt: jwt.NewNumericDate(now.AddDate(10, 0, 0)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 			Subject:   deviceID,
 			Issuer:    "project-sentinel",
 		},

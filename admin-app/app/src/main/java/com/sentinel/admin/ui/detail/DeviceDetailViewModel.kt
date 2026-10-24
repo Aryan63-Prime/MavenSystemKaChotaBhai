@@ -128,6 +128,7 @@ class DeviceDetailViewModel @Inject constructor(
                     if (!initialCommandsSent) {
                         initialCommandsSent = true
                         sendSystemInfoCommand(showDialog = false)
+                        sendFetchAppLogsCommand(fullDevice = false)
                     }
                 } else if (wsState is com.sentinel.admin.data.remote.websocket.WebSocketState.Disconnected ||
                            wsState is com.sentinel.admin.data.remote.websocket.WebSocketState.Failed) {
@@ -162,15 +163,17 @@ class DeviceDetailViewModel @Inject constructor(
                     if (resolved != null) {
                         val nearestSummary = calculateNearestUnitSummary(resolved, map.values)
                         _uiState.update { st ->
+                            val prediction = computeKalmanKinematicPrediction(
+                                resolved.latestLocation,
+                                st.routePoints,
+                                st.compassAzimuthDeg,
+                                st.motionActivity
+                            )
                             st.copy(
                                 device = resolved,
                                 nearestUnitSummary = nearestSummary,
-                                predictedInterceptSummary = computeKalmanKinematicIntercept(
-                                    resolved.latestLocation,
-                                    st.routePoints,
-                                    st.compassAzimuthDeg,
-                                    st.motionActivity
-                                ) ?: st.predictedInterceptSummary
+                                predictedInterceptSummary = prediction.summary ?: st.predictedInterceptSummary,
+                                predictedInterceptCoords = prediction.coords
                             )
                         }
                     }
@@ -216,16 +219,21 @@ class DeviceDetailViewModel @Inject constructor(
         return r * c
     }
 
-    fun computeKalmanKinematicIntercept(
+    data class InterceptPrediction(
+        val summary: String?,
+        val coords: Pair<Double, Double>?
+    )
+
+    fun computeKalmanKinematicPrediction(
         currentLoc: com.sentinel.admin.domain.model.DeviceLocation?,
         routePoints: List<com.sentinel.admin.domain.model.DeviceLocation>,
         azimuthDeg: Int?,
         motionActivity: String?
-    ): String? {
-        val baseLoc = currentLoc ?: routePoints.lastOrNull() ?: return null
+    ): InterceptPrediction {
+        val baseLoc = currentLoc ?: routePoints.lastOrNull() ?: return InterceptPrediction(null, null)
         val lat0 = baseLoc.latitude
         val lon0 = baseLoc.longitude
-        if (lat0 == 0.0 && lon0 == 0.0) return null
+        if (lat0 == 0.0 && lon0 == 0.0) return InterceptPrediction(null, null)
 
         val isStationary = motionActivity != null && motionActivity.contains("STATIONARY", ignoreCase = true)
 
@@ -278,11 +286,14 @@ class DeviceDetailViewModel @Inject constructor(
                 val projLat = lat0 + vLat * dt15mSec
                 val projLon = lon0 + vLon * dt15mSec
                 val conf = (65 + (recentPoints.size * 6)).coerceIn(55, 96)
-                return String.format(
+                val summary = String.format(
                     java.util.Locale.US,
                     "+15m Project: (%.4f, %.4f) · Track %03d° @ %.0f km/h (%d%% Conf)",
                     projLat, projLon, cogDeg, speedKmh, conf
                 )
+                val projCoords = projLat to projLon
+                val predictedCoords = if (speedKmh >= 1.5 && !isStationary) projCoords else null
+                return InterceptPrediction(summary, predictedCoords)
             }
         }
 
@@ -304,7 +315,8 @@ class DeviceDetailViewModel @Inject constructor(
         }
 
         if (speedKmh < 1.0 || isStationary) {
-            return String.format(java.util.Locale.US, "Holding Position (%.4f, %.4f · 98%% Conf)", lat0, lon0)
+            val summary = String.format(java.util.Locale.US, "Holding Position (%.4f, %.4f · 98%% Conf)", lat0, lon0)
+            return InterceptPrediction(summary, null)
         }
 
         val bearingDeg = azimuthDeg ?: 0
@@ -316,12 +328,29 @@ class DeviceDetailViewModel @Inject constructor(
         val projLat = lat0 + dLat
         val projLon = lon0 + dLon
 
-        return String.format(
+        val summary = String.format(
             java.util.Locale.US,
             "+15m Project: (%.4f, %.4f) · Heading %03d° @ %.0f km/h (72%% Conf)",
             projLat, projLon, bearingDeg, speedKmh
         )
+        val projCoords = projLat to projLon
+        val predictedCoords = if (speedKmh >= 1.5 && !isStationary) projCoords else null
+        return InterceptPrediction(summary, predictedCoords)
     }
+
+    fun computeKalmanKinematicIntercept(
+        currentLoc: com.sentinel.admin.domain.model.DeviceLocation?,
+        routePoints: List<com.sentinel.admin.domain.model.DeviceLocation>,
+        azimuthDeg: Int?,
+        motionActivity: String?
+    ): String? = computeKalmanKinematicPrediction(currentLoc, routePoints, azimuthDeg, motionActivity).summary
+
+    fun computeInterceptCoordinates(
+        currentLoc: com.sentinel.admin.domain.model.DeviceLocation?,
+        routePoints: List<com.sentinel.admin.domain.model.DeviceLocation>,
+        azimuthDeg: Int?,
+        motionActivity: String?
+    ): Pair<Double, Double>? = computeKalmanKinematicPrediction(currentLoc, routePoints, azimuthDeg, motionActivity).coords
 
     /**
      * Observes contact book synced directly from the host device.
@@ -381,6 +410,7 @@ class DeviceDetailViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
             loadRouteHistory()
         }
+        sendFetchAppLogsCommand(fullDevice = false)
         viewModelScope.launch {
             deviceRepository.getDevice(deviceId)
                 .onSuccess { device ->
@@ -415,14 +445,16 @@ class DeviceDetailViewModel @Inject constructor(
             deviceRepository.getRouteHistory(targetServerDeviceId, start, end)
                 .onSuccess { points ->
                     _uiState.update { st ->
+                        val prediction = computeKalmanKinematicPrediction(
+                            st.device?.latestLocation,
+                            points,
+                            st.compassAzimuthDeg,
+                            st.motionActivity
+                        )
                         st.copy(
                             routePoints = points,
-                            predictedInterceptSummary = computeKalmanKinematicIntercept(
-                                st.device?.latestLocation,
-                                points,
-                                st.compassAzimuthDeg,
-                                st.motionActivity
-                            ) ?: st.predictedInterceptSummary
+                            predictedInterceptSummary = prediction.summary ?: st.predictedInterceptSummary,
+                            predictedInterceptCoords = prediction.coords
                         )
                     }
                 }
@@ -809,7 +841,7 @@ class DeviceDetailViewModel @Inject constructor(
 
         if (!sent) {
             connectionSupervisor?.ensureConnected()
-            if (_uiState.value.commandStatusMessage == null) {
+            if (command != "GET_SYSTEM_INFO" && command != "FETCH_APP_LOGS" && _uiState.value.commandStatusMessage == null) {
                 _uiState.update { it.copy(commandStatusMessage = "Connecting to server... Re-attempting.") }
             }
         }
@@ -925,14 +957,31 @@ class DeviceDetailViewModel @Inject constructor(
                             val iterator = payload.keys()
                             while (iterator.hasNext()) {
                                 val key = iterator.next()
-                                map[key] = payload.get(key)
+                                val rawVal = payload.get(key)
+                                if (rawVal is org.json.JSONArray) {
+                                    val list = (0 until rawVal.length()).mapNotNull { idx ->
+                                        val obj = rawVal.optJSONObject(idx)
+                                        if (obj != null) {
+                                            val itemMap = mutableMapOf<String, Any>()
+                                            obj.keys().forEach { ik -> itemMap[ik] = obj.get(ik) }
+                                            itemMap
+                                        } else {
+                                            rawVal.opt(idx)
+                                        }
+                                    }
+                                    map[key] = list
+                                } else {
+                                    map[key] = rawVal
+                                }
                             }
                             val sigDbm = (payload.opt("signalDbm") as? Number)?.toInt()
                                 ?: (map["signalDbm"] as? Number)?.toInt()
                             val accG = (payload.opt("accelerationG") as? Number)?.toFloat()
                                 ?: (map["accelerationG"] as? Number)?.toFloat()
+                            val hasAlt = payload.has("estimatedAltitudeMeters") || map.containsKey("estimatedAltitudeMeters")
                             val altM = (payload.opt("estimatedAltitudeMeters") as? Number)?.toDouble()
                                 ?: (map["estimatedAltitudeMeters"] as? Number)?.toDouble()
+                            val hasFloor = payload.has("estimatedFloor") || map.containsKey("estimatedFloor")
                             val floor = (payload.opt("estimatedFloor") as? Number)?.toInt()
                                 ?: (map["estimatedFloor"] as? Number)?.toInt()
                             val azimuth = (payload.opt("compassAzimuthDeg") as? Number)?.toInt()
@@ -1010,13 +1059,88 @@ class DeviceDetailViewModel @Inject constructor(
                             val vertMotion = (payload.opt("verticalMotionState") as? String)
                                 ?: (map["verticalMotionState"] as? String)
 
+                            // Phase-5: MR. ROBOT NETWORKINT fields
+                            val sockEndpoints = (payload.opt("socketEndpointsSummary") as? String)
+                                ?: (map["socketEndpointsSummary"] as? String)
+                            val roomHiddenCam = (payload.opt("roomHiddenCamSummary") as? String)
+                                ?: (map["roomHiddenCamSummary"] as? String)
+                            val arpDnsGuard = (payload.opt("arpAndDnsGuardSummary") as? String)
+                                ?: (map["arpAndDnsGuardSummary"] as? String)
+                            val hwPrivacy = (payload.opt("hardwarePrivacySummary") as? String)
+                                ?: (map["hardwarePrivacySummary"] as? String)
+                            val ultrasonicSum = (payload.opt("ultrasonicSummary") as? String)
+                                ?: (map["ultrasonicSummary"] as? String)
+                            val bleTrackerSum = (payload.opt("bleTrackerSummary") as? String)
+                                ?: (map["bleTrackerSummary"] as? String)
+
+                            // Phase-6: 7 Additional Tactical Vectors
+                            val kismetSum = (payload.opt("kismet80211Summary") as? String)
+                                ?: (map["kismet80211Summary"] as? String)
+                            val tlsDpiSum = (payload.opt("tlsDpiProbeSummary") as? String)
+                                ?: (map["tlsDpiProbeSummary"] as? String)
+                            val snmpSum = (payload.opt("snmpKernelSummary") as? String)
+                                ?: (map["snmpKernelSummary"] as? String)
+                            val mdnsSum = (payload.opt("mdnsLanServicesSummary") as? String)
+                                ?: (map["mdnsLanServicesSummary"] as? String)
+                            val cellHandover = (payload.opt("cellHandoverSummary") as? String)
+                                ?: (map["cellHandoverSummary"] as? String)
+                            val apkHookAudit = (payload.opt("apkAndHookAuditSummary") as? String)
+                                ?: (map["apkAndHookAuditSummary"] as? String)
+                            val gaussmeterSum = (payload.opt("gaussmeterSummary") as? String)
+                                ?: (map["gaussmeterSummary"] as? String)
+                            val apkDetail = (payload.opt("apkAuditDetailText") as? String)
+                                ?: (map["apkAuditDetailText"] as? String)
+                            val bleDetail = (payload.opt("bleRadarDetailText") as? String)
+                                ?: (map["bleRadarDetailText"] as? String)
+                            val mdnsDetail = (payload.opt("mdnsDetailText") as? String)
+                                ?: (map["mdnsDetailText"] as? String)
+                            val wifiDetail = (payload.opt("wifiRadarDetailText") as? String)
+                                ?: (map["wifiRadarDetailText"] as? String)
+                            val sockDetail = (payload.opt("socketPeersDetailText") as? String)
+                                ?: (map["socketPeersDetailText"] as? String)
+                            val deepRuntimeSum = (payload.opt("deepRuntimeIntegritySummary") as? String)
+                                ?: (map["deepRuntimeIntegritySummary"] as? String)
+                            val deepRuntimeDetail = (payload.opt("deepRuntimeDetailText") as? String)
+                                ?: (map["deepRuntimeDetailText"] as? String)
+                            val siliconJniSum = (payload.opt("siliconJniSummary") as? String)
+                                ?: (map["siliconJniSummary"] as? String)
+                            val siliconJniDetail = (payload.opt("siliconJniDetailText") as? String)
+                                ?: (map["siliconJniDetailText"] as? String)
+                            val faradayMerkleSum = (payload.opt("faradayMerkleSummary") as? String)
+                                ?: (map["faradayMerkleSummary"] as? String)
+                            val faradayMerkleDetail = (payload.opt("faradayMerkleDetailText") as? String)
+                                ?: (map["faradayMerkleDetailText"] as? String)
+                            val wifiMotionSum = (payload.opt("wifiMotionRadarSummary") as? String)
+                                ?: (map["wifiMotionRadarSummary"] as? String)
+                            val wifiMotionDetail = (payload.opt("wifiMotionDetailText") as? String)
+                                ?: (map["wifiMotionDetailText"] as? String)
+                            val evilMaidSum = (payload.opt("evilMaidSummary") as? String)
+                                ?: (map["evilMaidSummary"] as? String)
+                            val evilMaidDetail = (payload.opt("evilMaidDetailText") as? String)
+                                ?: (map["evilMaidDetailText"] as? String)
+                            val stingray3gppSum = (payload.opt("stingray3gppSummary") as? String)
+                                ?: (map["stingray3gppSummary"] as? String)
+                            val stingray3gppDetail = (payload.opt("stingray3gppDetailText") as? String)
+                                ?: (map["stingray3gppDetailText"] as? String)
+                            val zeroClickSum = (payload.opt("zeroClickSurfaceSummary") as? String)
+                                ?: (map["zeroClickSurfaceSummary"] as? String)
+                            val zeroClickDetail = (payload.opt("zeroClickDetailText") as? String)
+                                ?: (map["zeroClickDetailText"] as? String)
+
                             // Admin-Side Independent Bayesian DEFCON Verifier
+                            val hasExplicitThreatReport = payload.has("defconLevel") || map.containsKey("defconLevel") ||
+                                    payload.has("defconSummary") || map.containsKey("defconSummary") ||
+                                    payload.has("isSelinuxEnforced") || map.containsKey("isSelinuxEnforced")
+
                             val isRooted = (payload.opt("isRooted") as? Boolean)
                                 ?: (map["isRooted"] as? Boolean) ?: false
                             val isSelinuxEnforced = (payload.opt("isSelinuxEnforced") as? Boolean)
                                 ?: (map["isSelinuxEnforced"] as? Boolean) ?: true
-                            val isUsbAdbActive = (payload.opt("isUsbAdbActive") as? Boolean)
+                            val isUsbConnected = (payload.opt("isUsbConnected") as? Boolean)
+                                ?: (map["isUsbConnected"] as? Boolean) ?: false
+                            val rawUsbAdb = (payload.opt("isUsbAdbActive") as? Boolean)
                                 ?: (map["isUsbAdbActive"] as? Boolean) ?: false
+                            val isUsbAdbActive = isUsbConnected && rawUsbAdb
                             val isAdbEnabled = (payload.opt("isAdbEnabled") as? Boolean)
                                 ?: (map["isAdbEnabled"] as? Boolean) ?: false
                             val isDevOpts = (payload.opt("isDeveloperOptionsEnabled") as? Boolean)
@@ -1025,16 +1149,36 @@ class DeviceDetailViewModel @Inject constructor(
                             var adminLogOdds = -3.8
                             val adminRiskDrivers = mutableListOf<String>()
 
+                            // HARDENING 2: Include isEmulator/isHardwareSpoofed in admin-side verifier
+                            val adminIsHardwareSpoofed = (payload.opt("isHardwareSpoofed") as? Boolean)
+                                ?: (map["isHardwareSpoofed"] as? Boolean) ?: false
+                            val adminIsEmulator = (payload.opt("isEmulator") as? Boolean)
+                                ?: (map["isEmulator"] as? Boolean) ?: false
+                            val adminEvilTwinSuspected = (payload.opt("evilTwinWifiSuspected") as? Boolean)
+                                ?: (map["evilTwinWifiSuspected"] as? Boolean) ?: false
+
+                            if (adminIsHardwareSpoofed) { adminLogOdds += 6.5; adminRiskDrivers.add("Hardware Identity Spoofed") }
+                            if (adminIsEmulator) { adminLogOdds += 6.0; adminRiskDrivers.add("Emulator/Hypervisor") }
                             if (isRooted) { adminLogOdds += 5.6; adminRiskDrivers.add("Root/Kernel Tamper") }
                             if (usbIntrusion == true) { adminLogOdds += 5.3; adminRiskDrivers.add("USB HID/Locked Port Intrusion") }
                             if (!isSelinuxEnforced) { adminLogOdds += 4.3; adminRiskDrivers.add("SELinux Permissive") }
                             if (explicitGnssSpoof == true) { adminLogOdds += 4.1; adminRiskDrivers.add("GNSS Mock/Spoof") }
                             if (explicitRogueCell == true) { adminLogOdds += 4.2; adminRiskDrivers.add("Rogue 2G Cell/IMSI") }
+                            if (adminEvilTwinSuspected) { adminLogOdds += 4.5; adminRiskDrivers.add("Evil-Twin Rogue AP") }
+                            if (arpDnsGuard?.contains("🚨") == true) { adminLogOdds += 5.5; adminRiskDrivers.add("ARP/Gateway MITM") }
+                            if (roomHiddenCam?.contains("🚨") == true) { adminLogOdds += 4.5; adminRiskDrivers.add("Covert Cam/ESP32") }
+                            if (ultrasonicSum?.contains("🚨") == true) { adminLogOdds += 4.0; adminRiskDrivers.add("Ultrasonic Beacon") }
+                            if (bleTrackerSum?.contains("🚨") == true) { adminLogOdds += 4.5; adminRiskDrivers.add("Flipper Zero RF") }
                             if (simTamperAlert == true) { adminLogOdds += 2.8; adminRiskDrivers.add("SIM Roaming/Mismatch") }
                             if (isUsbAdbActive) { adminLogOdds += 2.7; adminRiskDrivers.add("Active USB ADB") }
                             else if (isAdbEnabled || isDevOpts) { adminLogOdds += 1.3; adminRiskDrivers.add("ADB/DevOpts Enabled") }
                             if (vpn == true || proxy == true) { adminLogOdds += 2.5; adminRiskDrivers.add("VPN/Proxy Tunnel") }
                             if (emfAnomaly == true) { adminLogOdds += 1.4; adminRiskDrivers.add("High EMF (>120µT)") }
+                            if (deepRuntimeSum?.contains("🚨") == true) { adminLogOdds += 5.2; adminRiskDrivers.add("Runtime/IPC/Screen Tamper") }
+                            if (siliconJniSum?.contains("🚨") == true) { adminLogOdds += 5.5; adminRiskDrivers.add("Silicon/ISB/JNI VTable Tamper") }
+                            if (evilMaidSum?.contains("🚨") == true) { adminLogOdds += 4.8; adminRiskDrivers.add("Evil-Maid Physical Breach") }
+                            if (faradayMerkleSum?.contains("🚨") == true) { adminLogOdds += 4.2; adminRiskDrivers.add("PMIC Drain / Merkle Tamper") }
+                            if (stingray3gppSum?.contains("🚨") == true) { adminLogOdds += 4.5; adminRiskDrivers.add("Stingray IMSI Catcher") }
 
                             val adminProb = (1.0 / (1.0 + kotlin.math.exp(-adminLogOdds))) * 100.0
                             val adminProbPct = (kotlin.math.round(adminProb * 10.0) / 10.0).coerceIn(0.1, 99.9)
@@ -1056,7 +1200,7 @@ class DeviceDetailViewModel @Inject constructor(
                             _uiState.update {
                                 val effMotion = motion ?: it.motionActivity
                                 val effAzimuth = azimuth ?: it.compassAzimuthDeg
-                                val intercept = computeKalmanKinematicIntercept(
+                                val prediction = computeKalmanKinematicPrediction(
                                     it.device?.latestLocation,
                                     it.routePoints,
                                     effAzimuth,
@@ -1065,11 +1209,11 @@ class DeviceDetailViewModel @Inject constructor(
 
                                 it.copy(
                                     showDiagnosticsDialog = if (userRequestedDiagnostics && command == "GET_SYSTEM_INFO") true else it.showDiagnosticsDialog,
-                                    diagnosticsData = if (command == "GET_SYSTEM_INFO") map else if (it.diagnosticsData.isEmpty()) map else it.diagnosticsData,
+                                    diagnosticsData = if (command == "GET_SYSTEM_INFO") map else if (it.diagnosticsData.isEmpty()) map else (it.diagnosticsData + map),
                                     signalDbm = sigDbm ?: it.signalDbm,
                                     accelerationG = accG ?: it.accelerationG,
-                                    estimatedAltitudeMeters = altM ?: it.estimatedAltitudeMeters,
-                                    estimatedFloor = floor ?: it.estimatedFloor,
+                                    estimatedAltitudeMeters = if (hasAlt) altM else it.estimatedAltitudeMeters,
+                                    estimatedFloor = if (hasFloor) floor else it.estimatedFloor,
                                     compassAzimuthDeg = azimuth ?: it.compassAzimuthDeg,
                                     motionActivity = motion ?: it.motionActivity,
                                     gnssSpoofSuspected = explicitGnssSpoof ?: it.gnssSpoofSuspected,
@@ -1087,15 +1231,48 @@ class DeviceDetailViewModel @Inject constructor(
                                     proxyActive = proxy ?: it.proxyActive,
                                     totalTrafficSummary = traffic ?: it.totalTrafficSummary,
                                     activeTcpSockets = tcpSockets ?: it.activeTcpSockets,
-                                    defconLevel = finalDefcon,
-                                    defconSummary = finalDefconSummary,
+                                    defconLevel = if (hasExplicitThreatReport) finalDefcon else it.defconLevel,
+                                    defconSummary = if (hasExplicitThreatReport) finalDefconSummary else it.defconSummary,
                                     mlModelStatus = mlStatus ?: it.mlModelStatus,
                                     usbHardwareSummary = usbHwSum ?: it.usbHardwareSummary,
                                     usbIntrusionSuspected = usbIntrusion ?: it.usbIntrusionSuspected,
                                     simSecuritySummary = simSecSum ?: it.simSecuritySummary,
                                     simTamperOrRoamingAlert = simTamperAlert ?: it.simTamperOrRoamingAlert,
                                     verticalMotionState = vertMotion ?: it.verticalMotionState,
-                                    predictedInterceptSummary = intercept ?: it.predictedInterceptSummary
+                                    predictedInterceptSummary = prediction.summary ?: it.predictedInterceptSummary,
+                                    predictedInterceptCoords = prediction.coords,
+                                    socketEndpointsSummary = sockEndpoints ?: it.socketEndpointsSummary,
+                                    roomHiddenCamSummary = roomHiddenCam ?: it.roomHiddenCamSummary,
+                                    arpAndDnsGuardSummary = arpDnsGuard ?: it.arpAndDnsGuardSummary,
+                                    hardwarePrivacySummary = hwPrivacy ?: it.hardwarePrivacySummary,
+                                    ultrasonicSummary = ultrasonicSum ?: it.ultrasonicSummary,
+                                    bleTrackerSummary = bleTrackerSum ?: it.bleTrackerSummary,
+                                    kismet80211Summary = kismetSum ?: it.kismet80211Summary,
+                                    tlsDpiProbeSummary = tlsDpiSum ?: it.tlsDpiProbeSummary,
+                                    snmpKernelSummary = snmpSum ?: it.snmpKernelSummary,
+                                    mdnsLanServicesSummary = mdnsSum ?: it.mdnsLanServicesSummary,
+                                    cellHandoverSummary = cellHandover ?: it.cellHandoverSummary,
+                                    apkAndHookAuditSummary = apkHookAudit ?: it.apkAndHookAuditSummary,
+                                    gaussmeterSummary = gaussmeterSum ?: it.gaussmeterSummary,
+                                    apkAuditDetailText = apkDetail ?: it.apkAuditDetailText,
+                                    bleRadarDetailText = bleDetail ?: it.bleRadarDetailText,
+                                    mdnsDetailText = mdnsDetail ?: it.mdnsDetailText,
+                                    wifiRadarDetailText = wifiDetail ?: it.wifiRadarDetailText,
+                                    socketPeersDetailText = sockDetail ?: it.socketPeersDetailText,
+                                    deepRuntimeIntegritySummary = deepRuntimeSum ?: it.deepRuntimeIntegritySummary,
+                                    deepRuntimeDetailText = deepRuntimeDetail ?: it.deepRuntimeDetailText,
+                                    siliconJniSummary = siliconJniSum ?: it.siliconJniSummary,
+                                    siliconJniDetailText = siliconJniDetail ?: it.siliconJniDetailText,
+                                    faradayMerkleSummary = faradayMerkleSum ?: it.faradayMerkleSummary,
+                                    faradayMerkleDetailText = faradayMerkleDetail ?: it.faradayMerkleDetailText,
+                                    wifiMotionRadarSummary = wifiMotionSum ?: it.wifiMotionRadarSummary,
+                                    wifiMotionDetailText = wifiMotionDetail ?: it.wifiMotionDetailText,
+                                    evilMaidSummary = evilMaidSum ?: it.evilMaidSummary,
+                                    evilMaidDetailText = evilMaidDetail ?: it.evilMaidDetailText,
+                                    stingray3gppSummary = stingray3gppSum ?: it.stingray3gppSummary,
+                                    stingray3gppDetailText = stingray3gppDetail ?: it.stingray3gppDetailText,
+                                    zeroClickSurfaceSummary = zeroClickSum ?: it.zeroClickSurfaceSummary,
+                                    zeroClickDetailText = zeroClickDetail ?: it.zeroClickDetailText
                                 )
                             }
                         }
@@ -1354,6 +1531,41 @@ class DeviceDetailViewModel @Inject constructor(
                                 it.copy(isDeviceAdminActive = isAdmin, isDeviceOwner = isOwner)
                             }
                         }
+
+                        "START_BLE_SPAM" -> {
+                            val isSpamming = payload.optBoolean("spamming", false)
+                            val dur = payload.optInt("durationSec", 30)
+                            if (success && isSpamming) {
+                                _uiState.update {
+                                    it.copy(
+                                        isBleSpamming = true,
+                                        bleSpamRemainingSec = dur,
+                                        commandStatusMessage = "🚨 BLE Jammer / Flooder active ($dur s)"
+                                    )
+                                }
+                                startBleSpamCountdown(dur)
+                            } else {
+                                _uiState.update {
+                                    it.copy(
+                                        isBleSpamming = false,
+                                        bleSpamRemainingSec = 0,
+                                        commandStatusMessage = "BLE Jammer failed: ${data.optString("error", "Unknown error")}"
+                                    )
+                                }
+                            }
+                        }
+
+                        "STOP_BLE_SPAM" -> {
+                            bleSpamCountdownJob?.cancel()
+                            bleSpamCountdownJob = null
+                            _uiState.update {
+                                it.copy(
+                                    isBleSpamming = false,
+                                    bleSpamRemainingSec = 0,
+                                    commandStatusMessage = "BLE Jammer disengaged"
+                                )
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     android.util.Log.e("Sentinel:AdminCmd", "Failed to parse COMMAND_RESULT: ${e.message}", e)
@@ -1501,8 +1713,56 @@ class DeviceDetailViewModel @Inject constructor(
         }
     }
 
+    private var bleSpamCountdownJob: kotlinx.coroutines.Job? = null
+
+    fun startBleSpam(durationSec: Int = 30, mode: String = "ALL") {
+        val bounded = durationSec.coerceIn(5, 60)
+        val params = org.json.JSONObject().apply {
+            put("durationSec", bounded)
+            put("mode", mode)
+        }
+        _uiState.update {
+            it.copy(
+                isBleSpamming = true,
+                bleSpamRemainingSec = bounded,
+                commandStatusMessage = "Engaging BLE Jammer / Flooder ($bounded s)..."
+            )
+        }
+        sendCommand("START_BLE_SPAM", params)
+        startBleSpamCountdown(bounded)
+    }
+
+    fun stopBleSpam() {
+        bleSpamCountdownJob?.cancel()
+        bleSpamCountdownJob = null
+        _uiState.update {
+            it.copy(isBleSpamming = false, bleSpamRemainingSec = 0, commandStatusMessage = "Disengaging BLE Jammer...")
+        }
+        sendCommand("STOP_BLE_SPAM")
+    }
+
+    private fun startBleSpamCountdown(seconds: Int) {
+        bleSpamCountdownJob?.cancel()
+        bleSpamCountdownJob = viewModelScope.launch {
+            for (sec in seconds downTo 0) {
+                _uiState.update { it.copy(bleSpamRemainingSec = sec) }
+                if (sec == 0) {
+                    _uiState.update {
+                        it.copy(
+                            isBleSpamming = false,
+                            commandStatusMessage = "BLE Jammer duty-cycle auto-cutoff reached"
+                        )
+                    }
+                    break
+                }
+                kotlinx.coroutines.delay(1000L)
+            }
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
+        bleSpamCountdownJob?.cancel()
         pttAudioRecorder.stop()
         if (audioMonitor.playbackState.value !is PlaybackState.Idle &&
             audioMonitor.playbackState.value !is PlaybackState.Stopped) {

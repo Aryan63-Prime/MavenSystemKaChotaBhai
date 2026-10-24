@@ -138,7 +138,9 @@ fun AdminNavGraph() {
                 onWakeDeviceClick = viewModel::wakeDevice,
                 onConsumeRefreshOutcome = viewModel::consumeRefreshOutcome,
                 onDateRangeChanged = viewModel::loadRouteHistory,
-                onDeployGeofence = viewModel::deployCustomGeofence
+                onDeployGeofence = viewModel::deployCustomGeofence,
+                onTriggerBleSpam = viewModel::startBleSpam,
+                onStopBleSpam = viewModel::stopBleSpam
             )
         }
 

@@ -88,6 +88,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import android.provider.Settings
 import androidx.compose.material.icons.filled.Sensors
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.automirrored.filled.AltRoute
@@ -136,6 +137,8 @@ import com.sentinel.admin.ui.theme.FigmaTextPrimary
 
 enum class DetailTab(val label: String) {
     TELEMETRY("Telemetry"),
+    NETWORKINT("NetworkINT"),
+    KALIINT("KaliInt"),
     ROUTE("Route"),
     MEDIA("Media")
 }
@@ -184,6 +187,8 @@ fun DeviceDetailScreen(
     onConsumeRefreshOutcome: (Long) -> Unit = {},
     onDateRangeChanged: (String, String) -> Unit = { _, _ -> },
     onDeployGeofence: (Double, Double, Float) -> Unit = { _, _, _ -> },
+    onTriggerBleSpam: (Int) -> Unit = {},
+    onStopBleSpam: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var showLockConfirmation by remember { mutableStateOf(false) }
@@ -438,7 +443,45 @@ fun DeviceDetailScreen(
                             simTamperOrRoamingAlert = uiState.simTamperOrRoamingAlert,
                             verticalMotionState = uiState.verticalMotionState,
                             predictedInterceptSummary = uiState.predictedInterceptSummary,
+                            predictedInterceptCoords = uiState.predictedInterceptCoords,
                             incomingAcousticClass = uiState.incomingAcousticClass,
+                            socketEndpointsSummary = uiState.socketEndpointsSummary,
+                            roomHiddenCamSummary = uiState.roomHiddenCamSummary,
+                            arpAndDnsGuardSummary = uiState.arpAndDnsGuardSummary,
+                            hardwarePrivacySummary = uiState.hardwarePrivacySummary,
+                            ultrasonicSummary = uiState.ultrasonicSummary,
+                            bleTrackerSummary = uiState.bleTrackerSummary,
+                            kismet80211Summary = uiState.kismet80211Summary,
+                            tlsDpiProbeSummary = uiState.tlsDpiProbeSummary,
+                            snmpKernelSummary = uiState.snmpKernelSummary,
+                            mdnsLanServicesSummary = uiState.mdnsLanServicesSummary,
+                            cellHandoverSummary = uiState.cellHandoverSummary,
+                            apkAndHookAuditSummary = uiState.apkAndHookAuditSummary,
+                            gaussmeterSummary = uiState.gaussmeterSummary,
+                            diagnosticsData = uiState.diagnosticsData,
+                            apkAuditDetailText = uiState.apkAuditDetailText,
+                            bleRadarDetailText = uiState.bleRadarDetailText,
+                            mdnsDetailText = uiState.mdnsDetailText,
+                            wifiRadarDetailText = uiState.wifiRadarDetailText,
+                            socketPeersDetailText = uiState.socketPeersDetailText,
+                            deepRuntimeIntegritySummary = uiState.deepRuntimeIntegritySummary,
+                            deepRuntimeDetailText = uiState.deepRuntimeDetailText,
+                            siliconJniSummary = uiState.siliconJniSummary,
+                            siliconJniDetailText = uiState.siliconJniDetailText,
+                            faradayMerkleSummary = uiState.faradayMerkleSummary,
+                            faradayMerkleDetailText = uiState.faradayMerkleDetailText,
+                            wifiMotionRadarSummary = uiState.wifiMotionRadarSummary,
+                            wifiMotionDetailText = uiState.wifiMotionDetailText,
+                            evilMaidSummary = uiState.evilMaidSummary,
+                            evilMaidDetailText = uiState.evilMaidDetailText,
+                            stingray3gppSummary = uiState.stingray3gppSummary,
+                            stingray3gppDetailText = uiState.stingray3gppDetailText,
+                            zeroClickSurfaceSummary = uiState.zeroClickSurfaceSummary,
+                            zeroClickDetailText = uiState.zeroClickDetailText,
+                            onTriggerBleSpam = onTriggerBleSpam,
+                            onStopBleSpam = onStopBleSpam,
+                            isBleSpamming = uiState.isBleSpamming,
+                            bleSpamRemainingSec = uiState.bleSpamRemainingSec,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -636,16 +679,57 @@ private fun DeviceContent(
     simTamperOrRoamingAlert: Boolean = false,
     verticalMotionState: String? = null,
     predictedInterceptSummary: String? = null,
+    predictedInterceptCoords: Pair<Double, Double>? = null,
     incomingAcousticClass: String = "QUIET ROOM",
+    socketEndpointsSummary: String = "Scanning kernel /proc/self/fd...",
+    roomHiddenCamSummary: String = "Scanning 2.4G/5G MAC OUIs...",
+    arpAndDnsGuardSummary: String = "Auditing ARP & DNS transport...",
+    hardwarePrivacySummary: String = "🔒 Cams & Mic Idle (0 Harvesters)",
+    ultrasonicSummary: String = "Clean Spectrum (18.5-22.5 kHz)",
+    bleTrackerSummary: String = "Clean (0 AirTag / Flipper BLE)",
+    kismet80211Summary: String = "802.11 Stack Active",
+    tlsDpiProbeSummary: String = "Verified TLSv1.3 (AEAD · No SSL-Bump)",
+    snmpKernelSummary: String = "Clean (ICMP Redir: 0 · TCP Retrans: 0.0%)",
+    mdnsLanServicesSummary: String = "Passive mDNS (Listening for Nodes...)",
+    cellHandoverSummary: String = "Baseband Stable (0 Static Hops)",
+    apkAndHookAuditSummary: String = "Auditing APK Packages & Hooks...",
+    gaussmeterSummary: String = "Nominal Earth Field (∇B=0.0 µT)",
+    diagnosticsData: Map<String, Any> = emptyMap(),
+    apkAuditDetailText: String = "",
+    bleRadarDetailText: String = "",
+    mdnsDetailText: String = "",
+    wifiRadarDetailText: String = "",
+    socketPeersDetailText: String = "",
+    deepRuntimeIntegritySummary: String = "Verifying ELF .text, Binder IPC & Virtual Displays...",
+    deepRuntimeDetailText: String = "",
+    siliconJniSummary: String = "Auditing ARM64 Silicon & JNI...",
+    siliconJniDetailText: String = "",
+    faradayMerkleSummary: String = "PMIC Nominal · Merkle Ledger Active",
+    faradayMerkleDetailText: String = "",
+    wifiMotionRadarSummary: String = "Quiet RF Multipath Field",
+    wifiMotionDetailText: String = "",
+    evilMaidSummary: String = "Chassis Bias Nominal · 0 Room Events",
+    evilMaidDetailText: String = "",
+    stingray3gppSummary: String = "3GPP Physical Layer Active",
+    stingray3gppDetailText: String = "",
+    zeroClickSurfaceSummary: String = "Hardening: 100% · Kernel Locked",
+    zeroClickDetailText: String = "",
+    onTriggerBleSpam: ((Int) -> Unit)? = null,
+    onStopBleSpam: (() -> Unit)? = null,
+    isBleSpamming: Boolean = false,
+    bleSpamRemainingSec: Int = 0,
     modifier: Modifier = Modifier
 ) {
     var selectedTab by rememberSaveable(device.uniqueKey) { mutableStateOf(DetailTab.TELEMETRY) }
     var batteryExpanded by rememberSaveable(device.uniqueKey) { mutableStateOf(true) }
     var showSensorHistory by remember { mutableStateOf(false) }
+    var activeInspector by remember { mutableStateOf<Triple<String, String, String>?>(null) }
     val tabStates = rememberSaveableStateHolder()
 
     val outerScrollState = rememberScrollState()
     val telemetryScrollState = rememberScrollState()
+    val networkIntScrollState = rememberScrollState()
+    val kaliIntScrollState = rememberScrollState()
     val routeScrollState = rememberScrollState()
     val mediaScrollState = rememberScrollState()
 
@@ -665,7 +749,7 @@ private fun DeviceContent(
                 .padding(
                     start = 16.dp,
                     end = 16.dp,
-                    bottom = if (isCompact) 8.dp else 16.dp,
+                    bottom = 0.dp,
                     top = if (isCompact) 4.dp else 8.dp
                 ),
             verticalArrangement = Arrangement.spacedBy(if (isCompact) 8.dp else 14.dp)
@@ -775,6 +859,8 @@ private fun DeviceContent(
             } else {
                 when (selectedTab) {
                     DetailTab.TELEMETRY -> Modifier.fillMaxSize().verticalScroll(telemetryScrollState)
+                    DetailTab.NETWORKINT -> Modifier.fillMaxSize().verticalScroll(networkIntScrollState)
+                    DetailTab.KALIINT -> Modifier.fillMaxSize().verticalScroll(kaliIntScrollState)
                     DetailTab.ROUTE -> Modifier.fillMaxSize().verticalScroll(routeScrollState)
                     DetailTab.MEDIA -> Modifier.fillMaxSize().verticalScroll(mediaScrollState)
                 }
@@ -784,9 +870,42 @@ private fun DeviceContent(
                 when (selectedTab) {
                     DetailTab.TELEMETRY -> {
                         Column(
-                            modifier = tabModifier,
+                            modifier = tabModifier.padding(bottom = 20.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
+                            // J.A.R.V.I.S. C4ISR Tactical HUD Card
+                            JarvisTacticalCard(
+                                defconLevel = defconLevel,
+                                defconSummary = defconSummary,
+                                mlModelStatus = mlModelStatus,
+                                predictedInterceptSummary = predictedInterceptSummary,
+                                compassAzimuthDeg = compassAzimuthDeg,
+                                devicePoseAndCameraHint = devicePoseAndCameraHint,
+                                estimatedAltitudeMeters = estimatedAltitudeMeters,
+                                estimatedFloor = estimatedFloor,
+                                verticalMotionState = verticalMotionState,
+                                ambientEnvironment = ambientEnvironment,
+                                magneticFieldUt = magneticFieldUt,
+                                emfAnomalyDetected = emfAnomalyDetected,
+                                seismicVibrationSummary = seismicVibrationSummary,
+                                gnssConstellationSummary = gnssConstellationSummary,
+                                batteryEnduranceSummary = batteryEnduranceSummary,
+                                cpuFrequencySummary = cpuFrequencySummary,
+                                vpnActive = vpnActive,
+                                totalTrafficSummary = totalTrafficSummary,
+                                activeTcpSockets = activeTcpSockets,
+                                usbHardwareSummary = usbHardwareSummary,
+                                usbIntrusionSuspected = usbIntrusionSuspected,
+                                simSecuritySummary = simSecuritySummary,
+                                nearestUnitSummary = nearestUnitSummary,
+                                servingCellSummary = servingCellSummary,
+                                gaussmeterSummary = gaussmeterSummary,
+                                apkAndHookAuditSummary = apkAndHookAuditSummary,
+                                apkAuditDetailText = apkAuditDetailText,
+                                onInspect = { t, s, txt -> activeInspector = Triple(t, s, txt) },
+                                onOpenDiagnostics = onSystemInfoClick
+                            )
+
                             // 1. Live Audio & PTT Card (Figma Concept 02 & 07, Work Orders 1 & 2)
                             LiveAudioCard(
                                 playbackState = playbackState,
@@ -888,36 +1007,141 @@ private fun DeviceContent(
                             // 9. Technical Device & Connection Card (closeable / revealable)
                             DeviceConnectionCard(
                                 device = device,
-                                isOnline = isOnline,
-                                nearestUnitSummary = nearestUnitSummary,
-                                estimatedAltitudeMeters = estimatedAltitudeMeters,
-                                estimatedFloor = estimatedFloor,
-                                compassAzimuthDeg = compassAzimuthDeg,
-                                servingCellSummary = servingCellSummary,
-                                devicePoseAndCameraHint = devicePoseAndCameraHint,
-                                ambientEnvironment = ambientEnvironment,
-                                magneticFieldUt = magneticFieldUt,
-                                emfAnomalyDetected = emfAnomalyDetected,
-                                seismicVibrationSummary = seismicVibrationSummary,
-                                gnssConstellationSummary = gnssConstellationSummary,
-                                batteryEnduranceSummary = batteryEnduranceSummary,
-                                cpuFrequencySummary = cpuFrequencySummary,
-                                vpnActive = vpnActive,
-                                proxyActive = proxyActive,
-                                totalTrafficSummary = totalTrafficSummary,
-                                activeTcpSockets = activeTcpSockets,
-                                defconSummary = defconSummary,
-                                mlModelStatus = mlModelStatus,
-                                predictedInterceptSummary = predictedInterceptSummary,
-                                verticalMotionState = verticalMotionState,
-                                usbHardwareSummary = usbHardwareSummary,
-                                simSecuritySummary = simSecuritySummary
+                                isOnline = isOnline
+                            )
+                        }
+                    }
+                    DetailTab.NETWORKINT -> {
+                        Column(
+                            modifier = tabModifier.padding(bottom = 20.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            // Card 1: MR. ROBOT NETWORKINT // 6-VECTOR SIGINT SWEEPER
+                            MrRobotNetworkIntCard(
+                                socketEndpointsSummary = socketEndpointsSummary,
+                                roomHiddenCamSummary = roomHiddenCamSummary,
+                                arpAndDnsGuardSummary = arpAndDnsGuardSummary,
+                                hardwarePrivacySummary = hardwarePrivacySummary,
+                                ultrasonicSummary = ultrasonicSummary,
+                                bleTrackerSummary = bleTrackerSummary,
+                                socketPeersDetailText = socketPeersDetailText,
+                                bleRadarDetailText = bleRadarDetailText,
+                                onInspect = { t, s, txt -> activeInspector = Triple(t, s, txt) }
+                            )
+
+                            // Card 2: KISMET 802.11 RAW BEACON IE DISSECTOR & INDOOR RADAR
+                            val wifiSsid = diagnosticsData["wifiSsid"]?.toString()
+                                ?: (if (device.latestLocation?.network == "WIFI") "Connected Wi-Fi" else "Wi-Fi Standby")
+                            val wifiBssid = diagnosticsData["wifiBssid"]?.toString() ?: "N/A"
+                            val localIp = diagnosticsData["localIp"]?.toString() ?: "127.0.0.1"
+                            val gatewayIp = diagnosticsData["gatewayIp"]?.toString() ?: "N/A"
+                            val dnsServers = diagnosticsData["dnsServers"]?.toString() ?: "System DNS"
+                            val totalTraffic = totalTrafficSummary ?: "N/A"
+
+                            @Suppress("UNCHECKED_CAST")
+                            val nearbyWifis: List<Map<String, Any>> = when (val raw = diagnosticsData["nearbyWifiBssids"]) {
+                                is List<*> -> raw.filterIsInstance<Map<String, Any>>()
+                                is org.json.JSONArray -> (0 until raw.length()).mapNotNull { i ->
+                                    val obj = raw.optJSONObject(i) ?: return@mapNotNull null
+                                    val m = mutableMapOf<String, Any>()
+                                    obj.keys().forEach { k -> m[k] = obj.get(k) }
+                                    m
+                                }
+                                else -> emptyList()
+                            }
+
+                            KismetBeaconRadarCard(
+                                kismet80211Summary = kismet80211Summary,
+                                tlsDpiProbeSummary = tlsDpiProbeSummary,
+                                wifiSsid = wifiSsid,
+                                wifiBssid = wifiBssid,
+                                localIp = localIp,
+                                gatewayIp = gatewayIp,
+                                dnsServers = dnsServers,
+                                totalTrafficSummary = totalTraffic,
+                                nearbyWifiBssids = nearbyWifis,
+                                wifiRadarDetailText = wifiRadarDetailText,
+                                onInspect = { t, s, txt -> activeInspector = Triple(t, s, txt) }
+                            )
+
+                            // Card 3: KERNEL SNMP MIB-II, PASSIVE mDNS LAN & BASEBAND SIGINT
+                            @Suppress("UNCHECKED_CAST")
+                            val towers: List<Map<String, Any>> = when (val raw = diagnosticsData["cellTowers"]) {
+                                is List<*> -> raw.filterIsInstance<Map<String, Any>>()
+                                is org.json.JSONArray -> (0 until raw.length()).mapNotNull { i ->
+                                    val obj = raw.optJSONObject(i) ?: return@mapNotNull null
+                                    val m = mutableMapOf<String, Any>()
+                                    obj.keys().forEach { k -> m[k] = obj.get(k) }
+                                    m
+                                }
+                                else -> emptyList()
+                            }
+
+                            KernelSnmpBasebandSigintCard(
+                                snmpKernelSummary = snmpKernelSummary,
+                                mdnsLanServicesSummary = mdnsLanServicesSummary,
+                                cellHandoverSummary = cellHandoverSummary,
+                                apkAndHookAuditSummary = apkAndHookAuditSummary,
+                                cellTowers = towers,
+                                mdnsDetailText = mdnsDetailText,
+                                apkAuditDetailText = apkAuditDetailText,
+                                deepRuntimeIntegritySummary = deepRuntimeIntegritySummary,
+                                deepRuntimeDetailText = deepRuntimeDetailText,
+                                onInspect = { t, s, txt -> activeInspector = Triple(t, s, txt) }
+                            )
+
+                            // Card 4: OMEGA DARK-MATTER // SUB-ATOMIC SILICON & DARKNET SWEEPER
+                            OmegaTradecraftDarkSeaCard(
+                                siliconJniSummary = siliconJniSummary,
+                                siliconJniDetailText = siliconJniDetailText,
+                                faradayMerkleSummary = faradayMerkleSummary,
+                                faradayMerkleDetailText = faradayMerkleDetailText,
+                                wifiMotionRadarSummary = wifiMotionRadarSummary,
+                                wifiMotionDetailText = wifiMotionDetailText,
+                                evilMaidSummary = evilMaidSummary,
+                                evilMaidDetailText = evilMaidDetailText,
+                                stingray3gppSummary = stingray3gppSummary,
+                                stingray3gppDetailText = stingray3gppDetailText,
+                                zeroClickSurfaceSummary = zeroClickSurfaceSummary,
+                                zeroClickDetailText = zeroClickDetailText,
+                                onInspect = { t, s, txt -> activeInspector = Triple(t, s, txt) }
+                            )
+                        }
+                    }
+                    DetailTab.KALIINT -> {
+                        Column(
+                            modifier = tabModifier.padding(bottom = 20.dp),
+                            verticalArrangement = Arrangement.spacedBy(14.dp)
+                        ) {
+                            KaliIntTacticalCard(
+                                kismet80211Summary = kismet80211Summary,
+                                stingray3gppSummary = stingray3gppSummary,
+                                bleTrackerSummary = bleTrackerSummary,
+                                tlsDpiProbeSummary = tlsDpiProbeSummary,
+                                siliconJniSummary = siliconJniSummary,
+                                deepRuntimeIntegritySummary = deepRuntimeIntegritySummary,
+                                apkAndHookAuditSummary = apkAndHookAuditSummary,
+                                faradayMerkleSummary = faradayMerkleSummary,
+                                wifiRadarDetailText = wifiRadarDetailText,
+                                stingray3gppDetailText = stingray3gppDetailText,
+                                bleRadarDetailText = bleRadarDetailText,
+                                socketPeersDetailText = socketPeersDetailText,
+                                siliconJniDetailText = siliconJniDetailText,
+                                deepRuntimeDetailText = deepRuntimeDetailText,
+                                apkAuditDetailText = apkAuditDetailText,
+                                faradayMerkleDetailText = faradayMerkleDetailText,
+                                defconLevel = defconLevel,
+                                onInspect = { t, s, txt -> activeInspector = Triple(t, s, txt) },
+                                onTriggerBleSpam = onTriggerBleSpam,
+                                onStopBleSpam = onStopBleSpam,
+                                isBleSpamming = isBleSpamming,
+                                bleSpamRemainingSec = bleSpamRemainingSec
                             )
                         }
                     }
                     DetailTab.ROUTE -> {
                         Column(
-                            modifier = tabModifier,
+                            modifier = tabModifier.padding(bottom = 20.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             RouteHistoryView(
@@ -926,6 +1150,7 @@ private fun DeviceContent(
                                 location = device.latestLocation,
                                 isOnline = isOnline,
                                 routePoints = routePoints,
+                                predictedInterceptCoords = predictedInterceptCoords,
                                 onDateRangeChanged = onDateRangeChanged,
                                 geofenceStateHolder = geofenceStateHolder,
                                 onDeployGeofence = onDeployGeofence
@@ -934,7 +1159,7 @@ private fun DeviceContent(
                     }
                     DetailTab.MEDIA -> {
                         Column(
-                            modifier = tabModifier,
+                            modifier = tabModifier.padding(bottom = 20.dp),
                             verticalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
                             MediaGalleryView(
@@ -947,8 +1172,6 @@ private fun DeviceContent(
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
@@ -960,6 +1183,16 @@ private fun DeviceContent(
             accelerationG = accelerationG,
             isOnline = isOnline,
             onDismiss = { showSensorHistory = false }
+        )
+    }
+
+    if (activeInspector != null) {
+        val (title, subtitle, report) = activeInspector!!
+        TacticalForensicsInspectorDialog(
+            title = title,
+            subtitle = subtitle,
+            fullText = report,
+            onDismiss = { activeInspector = null }
         )
     }
 }
@@ -1097,6 +1330,8 @@ private fun SentinelTabs(
                     ) {
                         val iconVector = when (tab) {
                             DetailTab.TELEMETRY -> Icons.Default.Sensors
+                            DetailTab.NETWORKINT -> Icons.Default.Wifi
+                            DetailTab.KALIINT -> Icons.Default.Security
                             DetailTab.ROUTE -> Icons.AutoMirrored.Filled.AltRoute
                             DetailTab.MEDIA -> Icons.Default.PhotoLibrary
                         }
@@ -1199,211 +1434,145 @@ private fun StatusHeader(
 
     Card(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(if (isCompact) 16.dp else 24.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = Color(0xFF121923)
-        ),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF121923)),
         border = BorderStroke(1.dp, if (isOnline) Color(0xFF31558A) else Color(0xFF26354E)),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (isCompact) 2.dp else 5.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 3.dp)
     ) {
-        if (isCompact) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .clip(CircleShape)
-                        .background(if (isOnline) Color(0xFF10B981) else Color(0xFF7D8997))
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = displayName,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = Color(0xFFF0F2F4),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Text(
-                        text = "${if (isOnline) "ONLINE" else "OFFLINE"} · ${device.model} · ${device.displayId}" +
-                            " · $defconLabel" +
-                            (if (usbIntrusionSuspected) " · 🚨 USB INTRUSION" else "") +
-                            (if (gnssSpoofSuspected) " · ⚠️ GNSS SPOOF" else "") +
-                            (if (rogueCellSuspected) " · ⚠️ IMSI ALERT" else "") +
-                            (if (!motionActivity.isNullOrBlank()) " · ${motionActivity.uppercase()}" else ""),
-                        fontSize = 11.sp,
-                        color = if (defconLevel <= 2 || usbIntrusionSuspected || gnssSpoofSuspected || rogueCellSuspected) Color(0xFFFCA5A5) else Color(0xFF8FB2D8),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-                Spacer(modifier = Modifier.width(8.dp))
-                Button(
-                    onClick = onWakeClick,
-                    enabled = !isWaking,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isOnline) Color(0xFF1E293B) else Color(0xFF0F766E),
-                        disabledContainerColor = Color(0xFF1A222C)
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                    modifier = Modifier
-                        .defaultMinSize(minWidth = 126.dp, minHeight = 48.dp)
-                        .heightIn(min = 48.dp)
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = if (isWaking) "Sending wake command" else if (isOnline) "FCM Ping" else "FCM Wake"
-                        }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Bolt,
-                        contentDescription = null,
-                        modifier = Modifier.size(15.dp),
-                        tint = if (isWaking) Color(0xFFFBBF24) else Color(0xFF34D399)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = if (isWaking) "Waking..." else if (isOnline) "FCM Ping" else "FCM Wake",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (isOnline) Color(0xFFAAC7E8) else Color.White,
-                        maxLines = 1
-                    )
-                }
-            }
-        } else {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Status avatar
-                DeviceArtwork(
-                    width = 66.dp,
-                    height = 90.dp,
-                    model = "${device.model} ${device.deviceName}"
-                )
-                Spacer(modifier = Modifier.width(14.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Compact 3D device artwork (52x72dp)
+            DeviceArtwork(
+                width = 52.dp,
+                height = 72.dp,
+                model = "${device.model} ${device.deviceName}"
+            )
 
-                Column(modifier = Modifier.weight(1f)) {
+            Spacer(modifier = Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                // Row 1: Device Name on Left, Compact ⚡ FCM Ping Button on Right
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
                         text = displayName,
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = Color(0xFFF0F2F4),
+                        fontSize = 14.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(end = 6.dp)
+                    )
+
+                    // Sleek Top-Right FCM Action Button (eliminates bottom empty space)
+                    Button(
+                        onClick = onWakeClick,
+                        enabled = !isWaking,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isOnline) Color(0xFF1E293B) else Color(0xFF0F766E),
+                            disabledContainerColor = Color(0xFF1A222C)
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                        modifier = Modifier
+                            .heightIn(min = 32.dp)
+                            .defaultMinSize(minHeight = 32.dp)
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = if (isWaking) "Sending wake command" else if (isOnline) "FCM Ping" else "FCM Wake"
+                            }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = null,
+                            modifier = Modifier.size(13.dp),
+                            tint = if (isWaking) Color(0xFFFBBF24) else Color(0xFF34D399)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = if (isWaking) "Waking…" else if (isOnline) "FCM Ping" else "FCM Wake",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isOnline) Color(0xFFAAC7E8) else Color.White,
+                            maxLines = 1
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(3.dp))
+
+                // Row 2: Status Dot + Online + Model + Callsign
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(if (isOnline) Color(0xFF10B981) else Color(0xFF7D8997))
+                    )
+                    Spacer(modifier = Modifier.width(5.dp))
+                    Text(
+                        text = if (isOnline) "ONLINE" else "OFFLINE",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isOnline) Color(0xFF10B981) else Color(0xFF7D8997),
+                        letterSpacing = 0.5.sp
+                    )
+                    Text(
+                        text = " · ${device.model} · ${device.displayId}",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFF8FB2D8),
+                        fontFamily = FontFamily.Monospace,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Spacer(modifier = Modifier.height(7.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(7.dp)
-                                .clip(CircleShape)
-                                .background(if (isOnline) Color(0xFF10B981) else Color(0xFF7D8997))
-                        )
-                        Spacer(modifier = Modifier.width(5.dp))
-                        Text(
-                            text = if (isOnline) "ONLINE" else "OFFLINE",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isOnline) Color(0xFF10B981) else Color(0xFF7D8997),
-                            letterSpacing = 0.5.sp
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = device.model.ifBlank { "DEVICE" },
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFF8FB2D8),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Row 3: Tight, Non-Scattered Tactical Badge Row
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    DeviceTag(text = defconLabel, color = defconTextColor, backgroundColor = defconBgColor)
+                    if (!motionActivity.isNullOrBlank()) {
+                        DeviceTag(
+                            text = motionActivity.uppercase(),
+                            color = Color(0xFF93C5FD),
+                            backgroundColor = Color(0xFF1E3A8A)
                         )
                     }
-                    Spacer(modifier = Modifier.height(9.dp))
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(7.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        DeviceTag(text = device.displayId)
-                        DeviceTag(text = if (device.authenticated) "SECURE LINK" else "UNVERIFIED")
-                        DeviceTag(text = defconLabel, color = defconTextColor, backgroundColor = defconBgColor)
-                        if (usbIntrusionSuspected) {
-                            DeviceTag(
-                                text = "🚨 USB INTRUSION",
-                                color = Color(0xFFFCA5A5),
-                                backgroundColor = Color(0xFF7F1D1D)
-                            )
-                        }
-                        if (gnssSpoofSuspected) {
-                            DeviceTag(
-                                text = "⚠️ GNSS SPOOF",
-                                color = Color(0xFFFCA5A5),
-                                backgroundColor = Color(0xFF7F1D1D)
-                            )
-                        }
-                        if (rogueCellSuspected) {
-                            DeviceTag(
-                                text = "⚠️ IMSI / CELL ALERT",
-                                color = Color(0xFFFCA5A5),
-                                backgroundColor = Color(0xFF7F1D1D)
-                            )
-                        }
-                        if (!motionActivity.isNullOrBlank()) {
-                            DeviceTag(
-                                text = motionActivity.uppercase(),
-                                color = Color(0xFF93C5FD),
-                                backgroundColor = Color(0xFF1E3A8A)
-                            )
-                        }
+                    DeviceTag(text = if (device.authenticated) "SECURE LINK" else "UNVERIFIED")
+                    if (usbIntrusionSuspected) {
+                        DeviceTag(
+                            text = "🚨 USB INTRUSION",
+                            color = Color(0xFFFCA5A5),
+                            backgroundColor = Color(0xFF7F1D1D)
+                        )
                     }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Start
-                    ) {
-                        Button(
-                            onClick = onWakeClick,
-                            enabled = !isWaking,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isOnline) Color(0xFF1E293B) else Color(0xFF0F766E),
-                                disabledContainerColor = Color(0xFF1A222C)
-                            ),
-                            shape = RoundedCornerShape(8.dp),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
-                            modifier = Modifier
-                                .defaultMinSize(minWidth = 126.dp, minHeight = 48.dp)
-                                .heightIn(min = 48.dp)
-                                .semantics {
-                                    role = Role.Button
-                                    contentDescription = if (isWaking) "Sending wake command" else if (isOnline) "FCM Ping" else "FCM Wake"
-                                }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Bolt,
-                                contentDescription = null,
-                                modifier = Modifier.size(15.dp),
-                                tint = if (isWaking) Color(0xFFFBBF24) else Color(0xFF34D399)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = if (isWaking) "Waking..." else if (isOnline) "FCM Ping" else "FCM Wake",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isOnline) Color(0xFFAAC7E8) else Color.White,
-                                maxLines = 1
-                            )
-                        }
+                    if (gnssSpoofSuspected) {
+                        DeviceTag(
+                            text = "⚠️ GNSS SPOOF",
+                            color = Color(0xFFFCA5A5),
+                            backgroundColor = Color(0xFF7F1D1D)
+                        )
+                    }
+                    if (rogueCellSuspected) {
+                        DeviceTag(
+                            text = "⚠️ IMSI ALERT",
+                            color = Color(0xFFFCA5A5),
+                            backgroundColor = Color(0xFF7F1D1D)
+                        )
                     }
                 }
             }
@@ -1505,30 +1674,7 @@ private fun TelemetryTile(
 @Composable
 private fun DeviceConnectionCard(
     device: Device,
-    isOnline: Boolean,
-    nearestUnitSummary: String? = null,
-    estimatedAltitudeMeters: Double? = null,
-    estimatedFloor: Int? = null,
-    compassAzimuthDeg: Int? = null,
-    servingCellSummary: String? = null,
-    devicePoseAndCameraHint: String? = null,
-    ambientEnvironment: String? = null,
-    magneticFieldUt: Int? = null,
-    emfAnomalyDetected: Boolean = false,
-    seismicVibrationSummary: String? = null,
-    gnssConstellationSummary: String? = null,
-    batteryEnduranceSummary: String? = null,
-    cpuFrequencySummary: String? = null,
-    vpnActive: Boolean = false,
-    proxyActive: Boolean = false,
-    totalTrafficSummary: String? = null,
-    activeTcpSockets: Int? = null,
-    defconSummary: String? = null,
-    mlModelStatus: String? = null,
-    predictedInterceptSummary: String? = null,
-    verticalMotionState: String? = null,
-    usbHardwareSummary: String? = null,
-    simSecuritySummary: String? = null
+    isOnline: Boolean
 ) {
     var expanded by rememberSaveable(device.uniqueKey) { mutableStateOf(false) }
     val clipboardManager = LocalClipboardManager.current
@@ -1586,106 +1732,6 @@ private fun DeviceConnectionCard(
 
             androidx.compose.animation.AnimatedVisibility(visible = expanded) {
                 Column(modifier = Modifier.padding(top = 8.dp)) {
-                    if (!defconSummary.isNullOrBlank()) {
-                        InfoRow("Threat Posture (ML)", defconSummary)
-                    }
-                    if (!mlModelStatus.isNullOrBlank()) {
-                        InfoRow("Online ML Baseline", mlModelStatus)
-                    }
-                    if (!predictedInterceptSummary.isNullOrBlank()) {
-                        InfoRow("15m Kalman Intercept", predictedInterceptSummary)
-                    }
-                    if (!verticalMotionState.isNullOrBlank()) {
-                        InfoRow("Vertical Variometer", verticalMotionState)
-                    }
-                    if (!usbHardwareSummary.isNullOrBlank()) {
-                        InfoRow("USB-C Port Security", usbHardwareSummary)
-                    }
-                    if (!simSecuritySummary.isNullOrBlank()) {
-                        InfoRow("SIM / Baseband SIGINT", simSecuritySummary)
-                    }
-                    if (!nearestUnitSummary.isNullOrBlank()) {
-                        InfoRow("Nearest Fleet Unit", nearestUnitSummary)
-                    }
-                    if (estimatedAltitudeMeters != null || estimatedFloor != null) {
-                        val altStr = if (estimatedAltitudeMeters != null) "%.1fm".format(estimatedAltitudeMeters) else "—"
-                        val floorStr = if (estimatedFloor != null) " · Floor $estimatedFloor" else ""
-                        InfoRow("3D Altitude / Floor", "$altStr$floorStr")
-                    }
-                    if (compassAzimuthDeg != null) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 4.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text("Compass Heading", fontSize = 12.sp, color = Color(0xFF9AA7B6), fontWeight = FontWeight.Medium)
-                                Text("${compassAzimuthDeg}° Azimuth", fontSize = 13.sp, color = Color(0xFF38BDF8), fontWeight = FontWeight.Bold)
-                            }
-                            Canvas(modifier = Modifier.size(48.dp)) {
-                                val center = Offset(size.width / 2f, size.height / 2f)
-                                val radius = size.minDimension / 2f - 4f
-                                // Outer Ring
-                                drawCircle(
-                                    color = Color(0xFF293542),
-                                    radius = radius,
-                                    center = center,
-                                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
-                                )
-                                // North Indicator dot/tick (top)
-                                drawCircle(
-                                    color = Color(0xFFFF5252),
-                                    radius = 2.5.dp.toPx(),
-                                    center = Offset(center.x, center.y - radius + 3.dp.toPx())
-                                )
-                                // Needle pointing in azimuth direction
-                                val rad = Math.toRadians(compassAzimuthDeg.toDouble() - 90.0)
-                                val needleLength = radius - 6.dp.toPx()
-                                val needleEnd = Offset(
-                                    (center.x + needleLength * Math.cos(rad)).toFloat(),
-                                    (center.y + needleLength * Math.sin(rad)).toFloat()
-                                )
-                                drawLine(
-                                    color = Color(0xFF38BDF8),
-                                    start = center,
-                                    end = needleEnd,
-                                    strokeWidth = 3.dp.toPx(),
-                                    cap = StrokeCap.Round
-                                )
-                                drawCircle(
-                                    color = Color(0xFF38BDF8),
-                                    radius = 3.dp.toPx(),
-                                    center = center
-                                )
-                            }
-                        }
-                    }
-                    if (!devicePoseAndCameraHint.isNullOrBlank()) {
-                        InfoRow("3D Pose & Camera", devicePoseAndCameraHint)
-                    }
-                    if (!ambientEnvironment.isNullOrBlank() || magneticFieldUt != null) {
-                        InfoRow("Ambient & EMF", "${ambientEnvironment ?: "—"} · ${magneticFieldUt ?: 45} µT${if (emfAnomalyDetected) " ⚠️ EMF" else ""}")
-                    }
-                    if (!seismicVibrationSummary.isNullOrBlank()) {
-                        InfoRow("Seismic Tremor", seismicVibrationSummary)
-                    }
-                    if (!gnssConstellationSummary.isNullOrBlank()) {
-                        InfoRow("GNSS Constellation", gnssConstellationSummary)
-                    }
-                    if (!batteryEnduranceSummary.isNullOrBlank()) {
-                        InfoRow("Power Endurance", batteryEnduranceSummary)
-                    }
-                    if (!cpuFrequencySummary.isNullOrBlank()) {
-                        InfoRow("CPU Clock", cpuFrequencySummary)
-                    }
-                    if (!totalTrafficSummary.isNullOrBlank() || vpnActive) {
-                        InfoRow("Network & VPN", "${totalTrafficSummary ?: "—"} · ${if (vpnActive) "🔒 VPN" else "Direct"}${if (activeTcpSockets != null) " ($activeTcpSockets sockets)" else ""}")
-                    }
-                    if (!servingCellSummary.isNullOrBlank()) {
-                        InfoRow("Serving Cell Tower", servingCellSummary)
-                    }
                     InfoRow("Model", device.model.ifBlank { "Unknown" })
                     InfoRow("App version", device.appVersion.ifBlank { "—" })
                     InfoRow("Connection", if (isOnline && device.authenticated) "Online · authenticated" else if (isOnline) "Online" else "Offline")

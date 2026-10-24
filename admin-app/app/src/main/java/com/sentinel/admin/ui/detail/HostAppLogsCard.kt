@@ -97,6 +97,21 @@ fun HostAppLogsCard(
         }
     }
 
+    // Realtime background auto-poll every 5 seconds while expanded & device is online
+    LaunchedEffect(expanded, isOnline, isFullDevice, filterQuery) {
+        if (expanded && isOnline) {
+            if (!isFetching) {
+                onFetchLogs(isFullDevice, filterQuery)
+            }
+            while (true) {
+                kotlinx.coroutines.delay(5000L)
+                if (!isFetching) {
+                    onFetchLogs(isFullDevice, filterQuery)
+                }
+            }
+        }
+    }
+
     // Full Screen Overlay Dialog
     if (showFullScreen) {
         FullScreenLogsDialog(

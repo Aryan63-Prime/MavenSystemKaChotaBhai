@@ -43,13 +43,35 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideOkHttpClient(): OkHttpClient {
-        return OkHttpClient.Builder()
+    fun provideOkHttpClient(
+        @ApplicationContext context: Context? = null
+    ): OkHttpClient {
+        val builder = OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
             .pingInterval(20, TimeUnit.SECONDS)
-            .build()
+
+        if (context != null) {
+            val attestor = com.sentinel.admin.data.security.SovereignSiliconAttestor(context)
+            builder.addInterceptor { chain ->
+                val proof = try { attestor.generateSiliconProof("ADMIN-001") } catch (_: Throwable) { null }
+                val reqBuilder = chain.request().newBuilder()
+                if (proof != null && proof.siliconDnaHash.isNotBlank()) {
+                    reqBuilder.header("X-Sentinel-Silicon-DNA", proof.siliconDnaHash)
+                    reqBuilder.header("X-Sentinel-Device-Model", proof.deviceModel)
+                    reqBuilder.header("X-Sentinel-SoC-Model", proof.socModel)
+                    if (proof.hwNonce.isNotBlank() && proof.hwSignature.isNotBlank() && proof.hwCertBase64.isNotBlank()) {
+                        reqBuilder.header("X-Sentinel-HW-Nonce", proof.hwNonce)
+                        reqBuilder.header("X-Sentinel-HW-Sig", proof.hwSignature)
+                        reqBuilder.header("X-Sentinel-HW-Cert", proof.hwCertBase64)
+                    }
+                }
+                chain.proceed(reqBuilder.build())
+            }
+        }
+
+        return builder.build()
     }
 
     @Provides

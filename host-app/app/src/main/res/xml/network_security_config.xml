@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- Strictly trust only pre-installed system CAs; reject user-installed MITM certs -->
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

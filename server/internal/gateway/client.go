@@ -24,4 +24,6 @@ type outgoingMessage struct {
 	MessageType     int
 	Payload         []byte
 	CloseAfterWrite bool
+	CloseCode       int
+	CloseReason     string
 }

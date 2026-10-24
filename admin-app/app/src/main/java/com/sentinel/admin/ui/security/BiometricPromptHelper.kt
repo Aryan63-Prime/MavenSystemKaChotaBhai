@@ -5,6 +5,15 @@ import androidx.biometric.BiometricPrompt
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.FragmentActivity
 
+fun android.content.Context.findFragmentActivity(): androidx.fragment.app.FragmentActivity? {
+    var ctx = this
+    while (ctx is android.content.ContextWrapper) {
+        if (ctx is androidx.fragment.app.FragmentActivity) return ctx
+        ctx = ctx.baseContext
+    }
+    return null
+}
+
 object BiometricPromptHelper {
 
     fun authenticate(
@@ -47,7 +56,7 @@ object BiometricPromptHelper {
         subtitle: String = "Verify identity to execute high-privilege operation",
         onAuthorized: () -> Unit
     ) {
-        val activity = context as? FragmentActivity
+        val activity = context.findFragmentActivity()
         if (activity != null) {
             val canAuth = try {
                 BiometricManager.from(context).canAuthenticate(

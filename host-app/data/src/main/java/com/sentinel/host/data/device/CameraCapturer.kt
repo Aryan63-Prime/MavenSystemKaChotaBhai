@@ -14,6 +14,8 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Base64
 import android.util.Log
+import android.util.Size
+import android.view.Surface
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -65,7 +67,7 @@ class CameraCapturer @Inject constructor(
             return@withLock mapOf("success" to false, "error" to "Photo capture operation not permitted")
         }
         try {
-            val result = withTimeoutOrNull(6000L) {
+            val result = withTimeoutOrNull(12000L) {
             suspendCancellableCoroutine<Map<String, Any>> { continuation ->
                 try {
                     val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -86,7 +88,7 @@ class CameraCapturer @Inject constructor(
 
                         if (facing == targetFacing) {
                             selectedCameraId = id
-                            if (!useFrontCamera) break
+                            break
                         }
                     }
 
@@ -103,22 +105,42 @@ class CameraCapturer @Inject constructor(
                     val actualFacing = characteristics.get(CameraCharacteristics.LENS_FACING) ?: targetFacing
                     Log.i(TAG, "Final Selected Camera2 ID '$selectedCameraId' (facing=$actualFacing, sensorOrientation=$sensorOrientation)")
 
+                    val streamConfigMap = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    val jpegSizes = streamConfigMap?.getOutputSizes(ImageFormat.JPEG)
+                    val bestSize = jpegSizes
+                        ?.filter { it.width <= 1920 && it.height <= 1080 }
+                        ?.maxByOrNull { it.width.toLong() * it.height.toLong() }
+                        ?: jpegSizes?.maxByOrNull { it.width.toLong() * it.height.toLong() }
+                        ?: Size(1280, 720)
+                    Log.i(TAG, "Selected Camera2 capture resolution: ${bestSize.width}x${bestSize.height}")
+
                     val cameraThread = HandlerThread("Sentinel-CameraThread").apply { start() }
                     val handler = Handler(cameraThread.looper)
                     var imageReader: ImageReader? = null
                     var cameraDevice: CameraDevice? = null
+                    var previewSurface: Surface? = null
+                    var dummyTexture: SurfaceTexture? = null
 
                     fun cleanup() {
-                        try { imageReader?.close() } catch (_: Exception) {}
-                        try { cameraDevice?.close() } catch (_: Exception) {}
-                        try { cameraThread.quitSafely() } catch (_: Exception) {}
+                        try { imageReader?.close() } catch (_: Throwable) {}
+                        try { previewSurface?.release() } catch (_: Throwable) {}
+                        try { dummyTexture?.release() } catch (_: Throwable) {}
+                        try { cameraDevice?.close() } catch (_: Throwable) {}
+                        try { cameraThread.quitSafely() } catch (_: Throwable) {}
                     }
 
                     continuation.invokeOnCancellation {
                         cleanup()
                     }
 
-                    val reader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 2)
+                    val texture = SurfaceTexture(false).apply {
+                        setDefaultBufferSize(640, 480)
+                    }
+                    dummyTexture = texture
+                    val pSurface = Surface(texture)
+                    previewSurface = pSurface
+
+                    val reader = ImageReader.newInstance(bestSize.width, bestSize.height, ImageFormat.JPEG, 2)
                     imageReader = reader
 
                     reader.setOnImageAvailableListener({ ir ->
@@ -145,7 +167,7 @@ class CameraCapturer @Inject constructor(
 
                                 val rotated = Bitmap.createBitmap(original, 0, 0, original.width, original.height, matrix, true)
                                 val baos = ByteArrayOutputStream()
-                                rotated.compress(Bitmap.CompressFormat.JPEG, 95, baos)
+                                rotated.compress(Bitmap.CompressFormat.JPEG, 90, baos)
                                 val finalBytes = baos.toByteArray()
                                 base64Image = Base64.encodeToString(finalBytes, Base64.NO_WRAP)
                                 Log.i(TAG, "Camera2 photo rotated upright ($degrees deg, isFront=$isFront)! bytes=${finalBytes.size}")
@@ -173,29 +195,31 @@ class CameraCapturer @Inject constructor(
                             Log.i(TAG, "Camera2 device onOpened")
                             cameraDevice = camera
                             try {
-                                val surface = reader.surface
-                                val captureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
-                                captureBuilder.addTarget(surface)
-                                captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                                captureBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                                captureBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                                captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                                val stillSurface = reader.surface
+                                val captureBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                                    addTarget(stillSurface)
+                                    set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                    set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                    set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                                }
 
                                 camera.createCaptureSession(
-                                    listOf(surface),
+                                    listOf(pSurface, stillSurface),
                                     object : CameraCaptureSession.StateCallback() {
                                         override fun onConfigured(session: CameraCaptureSession) {
-                                            Log.i(TAG, "Camera2 session onConfigured, starting preview repeating request for AE convergence")
+                                            Log.i(TAG, "Camera2 session onConfigured, warming up 3A on preview surface")
                                             try {
-                                                val previewBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-                                                previewBuilder.addTarget(surface)
-                                                previewBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-                                                previewBuilder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                                                previewBuilder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                                val previewBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                                                    addTarget(pSurface)
+                                                    set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                                                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                                    set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                                }
 
                                                 session.setRepeatingRequest(previewBuilder.build(), null, handler)
 
-                                                // Allow 500ms of preview frames on background cameraThread for hardware AE/AF to settle
+                                                // Allow 400ms for hardware AE/AF to converge on offscreen SurfaceTexture
                                                 handler.postDelayed({
                                                     try {
                                                         session.stopRepeating()
@@ -203,18 +227,24 @@ class CameraCapturer @Inject constructor(
                                                             override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
                                                                 Log.e(TAG, "Camera2 capture failed: reason=${failure.reason}")
                                                                 cleanup()
+                                                                if (continuation.isActive) {
+                                                                    continuation.resume(mapOf("success" to false, "error" to "Capture failed: ${failure.reason}"))
+                                                                }
                                                             }
                                                         }, handler)
                                                     } catch (e: Exception) {
                                                         Log.e(TAG, "Camera2 capture delayed exception: ${e.message}")
                                                         cleanup()
+                                                        if (continuation.isActive) {
+                                                            continuation.resume(mapOf("success" to false, "error" to (e.message ?: "Capture delayed error")))
+                                                        }
                                                     }
-                                                }, 500L)
+                                                }, 400L)
                                             } catch (e: Exception) {
-                                                Log.e(TAG, "Camera2 session.capture exception: ${e.message}")
+                                                Log.e(TAG, "Camera2 preview repeating exception: ${e.message}")
                                                 cleanup()
                                                 if (continuation.isActive) {
-                                                    continuation.resume(mapOf("success" to false, "error" to "Capture failed: ${e.message}"))
+                                                    continuation.resume(mapOf("success" to false, "error" to "Preview failed: ${e.message}"))
                                                 }
                                             }
                                         }

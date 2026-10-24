@@ -1,8 +1,12 @@
 package gateway
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
+
+	"github.com/gorilla/websocket"
+	"github.com/xaiop/project-sentinel/server/internal/protocol"
 )
 
 type Manager struct {
@@ -157,4 +161,68 @@ func (m *Manager) ForEachAdmin(fn func(client *Client)) {
 			fn(session.client)
 		}
 	}
+}
+
+// DisconnectAdminIdentity forcefully kicks connected admin sessions matching adminID.
+// It sends an ERROR control frame (code 403), closes the WebSocket with 1008 Policy Violation,
+// and removes the session from the manager.
+func (m *Manager) DisconnectAdminIdentity(adminID string, reason string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	target := strings.TrimSpace(adminID)
+	if target == "" {
+		return 0
+	}
+	if reason == "" {
+		reason = "Admin identity suspended or revoked"
+	}
+
+	errMsg := protocol.NewError(0, 403, reason)
+	errPayload, _ := json.Marshal(errMsg)
+
+	count := 0
+	toRemove := make([]string, 0)
+
+	for connID, session := range m.sessions {
+		authID := session.AuthenticatedDeviceID()
+		devID := session.DeviceID()
+		if authID == target || devID == target {
+			toRemove = append(toRemove, connID)
+			count++
+			if session.client != nil {
+				if session.client.Send != nil && session.client.Context != nil && session.client.Context.Err() == nil {
+					select {
+					case session.client.Send <- outgoingMessage{
+						MessageType:     websocket.TextMessage,
+						Payload:         errPayload,
+						CloseAfterWrite: true,
+						CloseCode:       websocket.ClosePolicyViolation,
+						CloseReason:     reason,
+					}:
+					default:
+						if session.client.Cancel != nil {
+							session.client.Cancel()
+						}
+						if session.client.Conn != nil {
+							_ = session.client.Conn.Close()
+						}
+					}
+				} else {
+					if session.client.Cancel != nil {
+						session.client.Cancel()
+					}
+					if session.client.Conn != nil {
+						_ = session.client.Conn.Close()
+					}
+				}
+			}
+		}
+	}
+
+	for _, connID := range toRemove {
+		delete(m.sessions, connID)
+	}
+
+	return count
 }

@@ -106,6 +106,14 @@ func (s *Service) SetEnrolledDeviceSource(e EnrolledDeviceSource) {
 	s.enrolled = e
 }
 
+// ListSessions returns snapshots of active sessions.
+func (s *Service) ListSessions() []SessionSnapshot {
+	if s == nil || s.sessions == nil {
+		return nil
+	}
+	return s.sessions.ListSessions()
+}
+
 // GetBatteryHistory returns historical battery and thermal telemetry for a device.
 func (s *Service) GetBatteryHistory(ctx context.Context, deviceID string, limit int) ([]repository.BatteryHistoryEntry, error) {
 	if s.enrolled == nil {

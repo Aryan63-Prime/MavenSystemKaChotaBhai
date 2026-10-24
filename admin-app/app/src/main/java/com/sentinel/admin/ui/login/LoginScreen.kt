@@ -209,7 +209,7 @@ fun LoginScreen(
                         value = uiState.token,
                         onValueChange = onTokenChanged,
                         label = { Text("Administrator token") },
-                        placeholder = { Text("eyJhbGciOiJIUzI1NiIs…", color = Color(0xFF7D8997)) },
+                        placeholder = { Text("Admin Bearer Token…", color = Color(0xFF7D8997)) },
                         isError = uiState.tokenError != null,
                         supportingText = uiState.tokenError?.let { { Text(it) } },
                         enabled = uiState.inputsEnabled,

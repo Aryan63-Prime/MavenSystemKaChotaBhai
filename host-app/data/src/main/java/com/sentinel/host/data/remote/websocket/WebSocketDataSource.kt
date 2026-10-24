@@ -44,6 +44,9 @@ class WebSocketDataSource(private val client: OkHttpClient) {
     @Volatile
     private var webSocket: WebSocket? = null
 
+    @Volatile
+    private var connectStartMs: Long = 0L
+
     /**
      * Opens a WebSocket connection to the given URL.
      * No-op if already connecting or connected.
@@ -51,10 +54,24 @@ class WebSocketDataSource(private val client: OkHttpClient) {
     @Synchronized
     fun connect(url: String) {
         val current = _state.value
-        if (current is WebSocketState.Connecting || current is WebSocketState.Connected) {
-            Log.w(TAG, "connect() called in state $current, ignoring")
+        if (current is WebSocketState.Connected) {
+            Log.w(TAG, "connect() called while already Connected, ignoring")
             return
         }
+        if (current is WebSocketState.Connecting) {
+            if (System.currentTimeMillis() - connectStartMs > 15_000L) {
+                Log.w(TAG, "connect() hung in Connecting for >15s — resetting stale socket")
+                try { webSocket?.cancel() } catch (_: Throwable) {}
+            } else {
+                Log.w(TAG, "connect() called in state $current, ignoring")
+                return
+            }
+        }
+
+        try {
+            webSocket?.cancel()
+        } catch (_: Throwable) {}
+        connectStartMs = System.currentTimeMillis()
 
         Log.i(TAG, "Connecting to $url")
         _state.value = WebSocketState.Connecting
@@ -108,6 +125,7 @@ class WebSocketDataSource(private val client: OkHttpClient) {
         override fun onOpen(webSocket: WebSocket, response: Response) {
             Log.i(TAG, "Connected (code=${response.code})")
             _state.value = WebSocketState.Connected
+            com.sentinel.host.data.device.SentinelLogBuffer.instance.addAppLog("WebSocket", "Uplink connected to gateway")
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
@@ -124,18 +142,22 @@ class WebSocketDataSource(private val client: OkHttpClient) {
         }
 
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+            if (this@WebSocketDataSource.webSocket != null && webSocket !== this@WebSocketDataSource.webSocket) return
             Log.i(TAG, "Closed (code=$code, reason=$reason)")
             cleanup()
             _state.value = WebSocketState.Disconnected
+            com.sentinel.host.data.device.SentinelLogBuffer.instance.addAppLog("WebSocket", "Uplink disconnected: $reason")
         }
 
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+            if (this@WebSocketDataSource.webSocket != null && webSocket !== this@WebSocketDataSource.webSocket) return
             Log.e(TAG, "Connection failed: ${t.message}", t)
             cleanup()
             _state.value = WebSocketState.Failed(
                 reason = t.message ?: "Unknown error",
                 code = response?.code
             )
+            com.sentinel.host.data.device.SentinelLogBuffer.instance.addAppLog("WebSocket", "Uplink failed: ${t.message}")
         }
     }
 

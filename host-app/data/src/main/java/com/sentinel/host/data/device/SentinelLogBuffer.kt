@@ -19,21 +19,26 @@ data class LogEntry(
 class SentinelLogBuffer @Inject constructor() {
     companion object {
         private const val TAG = "Sentinel:LogBuffer"
-        private const val MAX_CAPACITY = 250
+        private const val MAX_CAPACITY = 300
+        private val queue = ConcurrentLinkedQueue<LogEntry>()
+        private val appLogsQueue = ConcurrentLinkedQueue<String>()
         val instance by lazy { SentinelLogBuffer() }
-    }
 
-    private val queue = ConcurrentLinkedQueue<LogEntry>()
-    private val appLogsQueue = ConcurrentLinkedQueue<String>()
+        init {
+            val now = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+            appLogsQueue.offer("[$now][Sentinel:Core] Sentinel Host Process Initialized (PID: ${android.os.Process.myPid()})")
+            appLogsQueue.offer("[$now][Sentinel:Core] Realtime Log Pipeline Active & Monitoring")
+        }
+    }
 
     fun addAppLog(tag: String, message: String) {
         val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
         val formatted = "[$timeStr][$tag] $message"
         appLogsQueue.offer(formatted)
-        while (appLogsQueue.size > 200) {
+        while (appLogsQueue.size > MAX_CAPACITY) {
             appLogsQueue.poll()
         }
-        Log.d(tag, message)
+        Log.i(tag, message)
     }
 
     fun getAppLogs(fullDevice: Boolean = false, filter: String = ""): List<String> {
@@ -48,24 +53,54 @@ class SentinelLogBuffer @Inject constructor() {
             else -> listOf(lowerFilter)
         }
 
+        val myPid = android.os.Process.myPid()
         val logcatLogs = try {
-            val process = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-v", "time"))
-            process.inputStream.bufferedReader().useLines { lines ->
-                val matching = lines.filter { line ->
-                    if (filterTerms.isNotEmpty()) {
-                        filterTerms.any { term -> line.contains(term, ignoreCase = true) }
-                    } else if (fullDevice) {
-                        true
-                    } else {
-                        line.contains("Sentinel", ignoreCase = true) ||
-                        line.contains("Host", ignoreCase = true) ||
-                        line.contains("CmdProc", ignoreCase = true)
+            val tailCount = if (fullDevice || filterTerms.isNotEmpty()) "400" else "200"
+            val cmd = arrayOf("logcat", "-d", "-v", "time", "-t", tailCount)
+            val processBuilder = ProcessBuilder(*cmd)
+            processBuilder.redirectErrorStream(true)
+            val process = processBuilder.start()
+
+            val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+            val future = executor.submit(java.util.concurrent.Callable<List<String>> {
+                try {
+                    process.inputStream.bufferedReader().useLines { lines ->
+                        lines.filter { line ->
+                            if (filterTerms.isNotEmpty()) {
+                                filterTerms.any { term -> line.contains(term, ignoreCase = true) }
+                            } else if (fullDevice) {
+                                true
+                            } else {
+                                line.contains("Sentinel", ignoreCase = true) ||
+                                line.contains("Host", ignoreCase = true) ||
+                                line.contains("com.sentinel", ignoreCase = true) ||
+                                line.contains("CmdProc", ignoreCase = true) ||
+                                line.contains("($myPid)", ignoreCase = true) ||
+                                line.contains("($myPid:", ignoreCase = true) ||
+                                line.contains(" $myPid ", ignoreCase = true)
+                            }
+                        }.toList()
                     }
-                }.toList()
-                val limit = if (fullDevice || filterTerms.isNotEmpty()) 150 else 40
-                matching.takeLast(limit)
+                } finally {
+                    try { process.inputStream.close() } catch (_: Exception) {}
+                }
+            })
+
+            val lines = try {
+                future.get(1500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (e: java.util.concurrent.TimeoutException) {
+                future.cancel(true)
+                try { process.destroyForcibly() } catch (_: Exception) {}
+                Log.w(TAG, "logcat query timed out after 1.5s, falling back to buffer")
+                emptyList()
+            } finally {
+                executor.shutdownNow()
+                try { process.destroy() } catch (_: Exception) {}
             }
-        } catch (_: Exception) {
+            val limit = if (fullDevice || filterTerms.isNotEmpty()) 150 else 60
+            lines.takeLast(limit)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed reading logcat: ${e.message}")
             emptyList()
         }
 

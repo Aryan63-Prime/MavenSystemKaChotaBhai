@@ -91,6 +91,7 @@ class ConnectionSupervisor(
     private var observeJob: Job? = null
     private var reconnectJob: Job? = null
     private var heartbeatObserveJob: Job? = null
+    private var transportStateObserveJob: Job? = null
 
     /** Callbacks for on-demand audio streaming session lifecycle. */
     var onStartAudioRequested: ((sequence: Long, deviceId: String, streamId: String?, maxDurationSeconds: Long?) -> Unit)? = null
@@ -105,21 +106,47 @@ class ConnectionSupervisor(
      */
     fun start() {
         userRequestedDisconnect = false
-        observeJob?.cancel()
-        heartbeatObserveJob?.cancel()
 
         networkObserver.start()
 
-        observeJob = connectionRepository.events
-            .onEach { event -> handleEvent(event) }
-            .launchIn(scope)
+        if (observeJob?.isActive != true) {
+            observeJob = connectionRepository.events
+                .onEach { event -> handleEvent(event) }
+                .launchIn(scope)
+        }
 
         // Observe heartbeat timeout events
-        heartbeatObserveJob = heartbeatScheduler.events
-            .onEach { event -> handleEvent(event) }
-            .launchIn(scope)
+        if (heartbeatObserveJob?.isActive != true) {
+            heartbeatObserveJob = heartbeatScheduler.events
+                .onEach { event -> handleEvent(event) }
+                .launchIn(scope)
+        }
+
+        if (transportStateObserveJob?.isActive != true) {
+            transportStateObserveJob = connectionRepository.state
+                .onEach { transportState ->
+                    if (!userRequestedDisconnect &&
+                        _state.value is ConnectionState.Ready &&
+                        (transportState is ConnectionState.Disconnected || transportState is ConnectionState.Error)
+                    ) {
+                        Log.w(TAG, "Zombie Ready state detected (transport is $transportState) — forcing immediate reconnect!")
+                        audioStreamer.pause()
+                        locationStreamer.pause()
+                        heartbeatScheduler.stop()
+                        startReconnectLoop(initialAttempt = 0, immediateFirst = true)
+                    }
+                }
+                .launchIn(scope)
+        }
 
         Log.i(TAG, "Supervisor started")
+
+        if (!userRequestedDisconnect &&
+            (_state.value is ConnectionState.Disconnected || connectionRepository.state.value is ConnectionState.Disconnected) &&
+            reconnectJob?.isActive != true
+        ) {
+            startReconnectLoop(initialAttempt = 0, immediateFirst = true)
+        }
     }
 
     /**
@@ -136,6 +163,8 @@ class ConnectionSupervisor(
         heartbeatObserveJob = null
         observeJob?.cancel()
         observeJob = null
+        transportStateObserveJob?.cancel()
+        transportStateObserveJob = null
         networkObserver.stop()
         _state.value = ConnectionState.Disconnected
         Log.i(TAG, "Supervisor stopped (user-initiated)")

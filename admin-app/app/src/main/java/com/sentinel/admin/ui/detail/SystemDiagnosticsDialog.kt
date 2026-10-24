@@ -77,6 +77,54 @@ fun SystemDiagnosticsDialog(
                     DiagnosticItem(label = "SoC / Platform", value = soc)
                 }
 
+                val hypervisorSummary = data["hypervisorSummary"]?.toString() ?: ""
+                val gpuSummary = data["gpuRendererSummary"]?.toString() ?: ""
+                val sensorHwSummary = data["sensorHardwareSummary"]?.toString() ?: ""
+                val teeStatus = data["teeAttestationStatus"]?.toString() ?: ""
+
+                if (hypervisorSummary.isNotBlank()) {
+                    DiagnosticItem(label = "Silicon Authenticity", value = hypervisorSummary)
+                }
+                if (gpuSummary.isNotBlank()) {
+                    DiagnosticItem(label = "GPU Silicon (EGL)", value = gpuSummary)
+                }
+                if (sensorHwSummary.isNotBlank()) {
+                    DiagnosticItem(label = "MEMS Sensor Silicon", value = sensorHwSummary)
+                }
+                if (teeStatus.isNotBlank()) {
+                    DiagnosticItem(label = "TEE Key Attestation", value = teeStatus)
+                }
+
+                val raspFlags = (data["raspFlags"] as? Number)?.toInt()
+                val popSig = data["popSignature"]?.toString() ?: ""
+                val popCert = data["popCert"]?.toString() ?: ""
+
+                if (raspFlags != null) {
+                    val raspText = if (raspFlags == 0) {
+                        "Verified Clean (TracerPid: 0 · Maps: Clean · Threads: Clean · Dumpable: 0)"
+                    } else {
+                        "🚨 ACTIVE TAMPERING DETECTED (Bitmask: 0x${Integer.toHexString(raspFlags).uppercase()})"
+                    }
+                    DiagnosticItem(label = "Native RASP Watchdog", value = raspText)
+                }
+                if (popSig.isNotBlank()) {
+                    val certDesc = if (popCert.isNotBlank()) "StrongBox/TEE EC P-256" else "Standard TEE"
+                    DiagnosticItem(label = "Hardware Key Attestation", value = "$certDesc (ECDSA-SHA256 PoP Active)")
+                    DiagnosticItem(label = "Attestation PoP Nonce/Sig", value = "${popSig.take(16)}...${popSig.takeLast(8)}", isMonospace = true)
+                }
+
+                val serverPopStatus = data["serverPopStatus"]?.toString() ?: ""
+                val serverPopVerified = data["serverPopVerified"] == true
+                if (serverPopStatus.isNotBlank()) {
+                    val popDisplay = if (serverPopVerified) "Verified (ECDSA P-256 TOFU Pin Locked)" else "Unverified ($serverPopStatus)"
+                    DiagnosticItem(label = "Server PoP Verification", value = popDisplay)
+                }
+
+                val apkSigBlock = data["apkSigBlock"]?.toString() ?: data["apkSigBlock42"]?.toString() ?: ""
+                if (apkSigBlock.isNotBlank()) {
+                    DiagnosticItem(label = "Native APK SigBlock-42", value = apkSigBlock, isMonospace = true)
+                }
+
                 if (osRelease.isNotBlank()) {
                     DiagnosticItem(label = "Android Version", value = "Android $osRelease (API $osSdk)")
                 }
@@ -204,6 +252,35 @@ fun SystemDiagnosticsDialog(
                     label = "Root Status",
                     value = if (isRooted) "COMPROMISED (Root detected)" else "Clean (No root/tamper)"
                 )
+
+                val isEmulator = data["isEmulator"] == true
+                val isEmulatorFlag = isEmulator
+                val isHardwareSpoofed = data["isHardwareSpoofed"] == true
+                val emuVectors: List<String> = when (val raw = data["emulatorVectors"]) {
+                    is List<*> -> raw.mapNotNull { it?.toString() }.filter { it.isNotBlank() }
+                    else -> emptyList()
+                }.ifEmpty {
+                    data["emulatorVectorsText"]?.toString()?.split("\n")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+                }
+                val emuVectorCount = ((data["emulatorScore"] as? Number)?.toInt() ?: emuVectors.size).coerceAtLeast(emuVectors.size)
+
+                DiagnosticItem(
+                    label = "Hypervisor / Emulator",
+                    value = when {
+                        isEmulator && isHardwareSpoofed -> "🚨 SPOOFED EMULATOR ($emuVectorCount vectors)"
+                        isEmulator -> "⚠️ EMULATOR DETECTED ($emuVectorCount vectors)"
+                        else -> "Clean (Bare-Metal Physical Device)"
+                    }
+                )
+                if (emuVectors.isNotEmpty()) {
+                    emuVectors.take(6).forEachIndexed { idx, vec ->
+                        DiagnosticItem(
+                            label = "  ↳ Vector #${idx + 1}",
+                            value = vec,
+                            isMonospace = true
+                        )
+                    }
+                }
                 DiagnosticItem(label = "ADB Status", value = if (isAdb) "Enabled" else "Disabled")
                 DiagnosticItem(
                     label = "USB State",
@@ -248,11 +325,15 @@ fun SystemDiagnosticsDialog(
 
                 DiagnosticItem(
                     label = "IMSI-Catcher Detection",
-                    value = if (rogueCell) "SUSPECTED (2G Downgrade / Fake BTS)" else "Clean (No rogue tower detected)"
+                    value = when {
+                        rogueCell && isEmulatorFlag -> "🚨 SYNTHETIC CELL RIL (Fake QEMU Tower)"
+                        rogueCell -> "SUSPECTED (2G Downgrade / Fake BTS)"
+                        else -> "Clean (No rogue tower detected)"
+                    }
                 )
                 DiagnosticItem(
                     label = "GNSS Spoof Detection",
-                    value = if (gnssSpoof) "SUSPECTED (Mock location detected)" else "Clean (Authentic hardware GNSS)"
+                    value = if (gnssSpoof) (if (isEmulatorFlag) "SUSPECTED (Virtual Ranchu GNSS HAL)" else "SUSPECTED (Mock location detected)") else "Clean (Authentic hardware GNSS)"
                 )
                 if (servingCell.isNotBlank() && servingCell != "N/A") {
                     DiagnosticItem(label = "Serving Cell", value = servingCell, isMonospace = true)
@@ -266,8 +347,17 @@ fun SystemDiagnosticsDialog(
                 }
 
                 @Suppress("UNCHECKED_CAST")
-                val towers = data["cellTowers"] as? List<Map<String, Any>>
-                if (!towers.isNullOrEmpty()) {
+                val towers: List<Map<String, Any>> = when (val rawTowers = data["cellTowers"]) {
+                    is List<*> -> rawTowers.filterIsInstance<Map<String, Any>>()
+                    is org.json.JSONArray -> (0 until rawTowers.length()).mapNotNull { i ->
+                        val obj = rawTowers.optJSONObject(i) ?: return@mapNotNull null
+                        val m = mutableMapOf<String, Any>()
+                        obj.keys().forEach { k -> m[k] = obj.get(k) }
+                        m
+                    }
+                    else -> emptyList()
+                }
+                if (towers.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "DETECTED CELL TOWERS (${towers.size})",
@@ -289,8 +379,17 @@ fun SystemDiagnosticsDialog(
                 }
 
                 @Suppress("UNCHECKED_CAST")
-                val wifis = data["nearbyWifiBssids"] as? List<Map<String, Any>>
-                if (!wifis.isNullOrEmpty()) {
+                val wifis: List<Map<String, Any>> = when (val rawWifis = data["nearbyWifiBssids"]) {
+                    is List<*> -> rawWifis.filterIsInstance<Map<String, Any>>()
+                    is org.json.JSONArray -> (0 until rawWifis.length()).mapNotNull { i ->
+                        val obj = rawWifis.optJSONObject(i) ?: return@mapNotNull null
+                        val m = mutableMapOf<String, Any>()
+                        obj.keys().forEach { k -> m[k] = obj.get(k) }
+                        m
+                    }
+                    else -> emptyList()
+                }
+                if (wifis.isNotEmpty()) {
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "INDOOR WI-FI RADAR (${wifis.size})",
@@ -302,9 +401,19 @@ fun SystemDiagnosticsDialog(
                         val wSsid = w["ssid"]?.toString() ?: ""
                         val wBssid = w["bssid"]?.toString() ?: ""
                         val wRssi = w["rssiDbm"]?.toString() ?: ""
+                        val wBand = w["band"]?.toString() ?: run {
+                            val freq = (w["freqMhz"] as? Number)?.toInt() ?: 0
+                            when (freq) {
+                                in 2400..2500 -> "2.4G"
+                                in 4900..5900 -> "5G"
+                                in 5925..7125 -> "6G"
+                                else -> if (freq > 0) "${freq}M" else ""
+                            }
+                        }
+                        val bandSuffix = if (wBand.isNotBlank()) " [$wBand]" else ""
                         DiagnosticItem(
                             label = wSsid,
-                            value = "$wBssid ($wRssi dBm)",
+                            value = "$wBssid$bandSuffix ($wRssi dBm)",
                             isMonospace = true
                         )
                     }
@@ -403,8 +512,28 @@ fun SystemDiagnosticsDialog(
                     DiagnosticItem(label = "SIM / Baseband SIGINT", value = simSec)
                 }
 
+                // OMEGA 4: New diagnostic rows
+                val nativeSyscall = data["nativeSyscallStatus"]?.toString() ?: ""
+                val tlsMitmSummary = data["tlsMitmSummary"]?.toString() ?: ""
+                val wifiSecurity = data["wifiSecuritySummary"]?.toString() ?: ""
+                val memsEntropy = data["memsEntropySummary"]?.toString() ?: ""
+
+                if (nativeSyscall.isNotBlank()) {
+                    DiagnosticItem(label = "ARM64 Syscall / libc", value = nativeSyscall)
+                }
+                if (tlsMitmSummary.isNotBlank()) {
+                    DiagnosticItem(label = "TLS Trust Store", value = tlsMitmSummary)
+                }
+                if (wifiSecurity.isNotBlank()) {
+                    DiagnosticItem(label = "Wi-Fi Evil-Twin Radar", value = wifiSecurity)
+                }
+                if (memsEntropy.isNotBlank()) {
+                    DiagnosticItem(label = "MEMS Crystal & Entropy", value = memsEntropy)
+                }
+
                 Spacer(modifier = Modifier.height(10.dp))
-                val isCompromised = isRooted || rogueCell || gnssSpoof
+                val isSpoofedFlag = data["isHardwareSpoofed"] == true
+                val isCompromised = isRooted || isEmulatorFlag || isSpoofedFlag || rogueCell || gnssSpoof
                 Text(
                     text = if (isCompromised) "System Posture: ALERT / POTENTIAL THREAT" else "System Status: Nominal",
                     style = MaterialTheme.typography.labelMedium,
@@ -423,19 +552,26 @@ fun SystemDiagnosticsDialog(
 
 @Composable
 private fun DiagnosticItem(label: String, value: String, isMonospace: Boolean = false) {
-    Column(modifier = Modifier.padding(vertical = 3.dp)) {
-        Row(modifier = Modifier.fillMaxWidth()) {
+    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = androidx.compose.foundation.layout.Arrangement.SpaceBetween
+        ) {
             Text(
                 text = label,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(0.42f)
+                    .padding(end = 8.dp)
             )
             Text(
                 text = value,
                 style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.SemiBold,
-                fontFamily = if (isMonospace) FontFamily.Monospace else FontFamily.Default
+                fontFamily = if (isMonospace) FontFamily.Monospace else FontFamily.Default,
+                textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                modifier = Modifier.weight(0.58f)
             )
         }
     }

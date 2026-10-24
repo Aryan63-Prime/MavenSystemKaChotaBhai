@@ -55,7 +55,8 @@ class SentinelForegroundService : Service() {
         private const val CHANNEL_ID = "sentinel_fg_channel"
         private const val NOTIFICATION_ID = 1001
 
-        const val SERVER_URL = "wss://project-sentinel-rwt4.onrender.com/ws"
+        val SERVER_URL: String
+            get() = com.sentinel.host.data.device.SystemInfoProvider.getSecureGatewayEndpoint()
 
         const val EXTRA_FROM_BOOT = "extra_from_boot"
         const val ACTION_START = "com.sentinel.host.action.START"
@@ -91,6 +92,7 @@ class SentinelForegroundService : Service() {
     @Inject lateinit var deviceRepository: com.sentinel.host.domain.repository.DeviceRepository
     @Inject lateinit var sessionManager: com.sentinel.host.domain.session.SessionManager
     @Inject lateinit var hostGeofenceManager: com.sentinel.host.data.location.HostGeofenceManager
+    @Inject lateinit var hardwareKeyAttestor: com.sentinel.host.data.device.HardwareKeyAttestor
 
     private val exceptionHandler = CoroutineExceptionHandler { _, throwable ->
         Log.e(TAG, "Unhandled exception in Sentinel service scope: ${throwable.message}", throwable)
@@ -98,6 +100,11 @@ class SentinelForegroundService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main + exceptionHandler)
     private var isMicrophoneElevated = false
+    private var isCameraElevated = false
+
+    private val isTransportTrulyReady: Boolean
+        get() = connectionSupervisor.state.value is ConnectionState.Ready &&
+                webSocketDataSource.state.value is com.sentinel.host.data.remote.websocket.WebSocketState.Connected
 
     private val locationReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -110,6 +117,23 @@ class SentinelForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "SentinelForegroundService created")
+
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Log.e(TAG, "Caught fatal exception on ${thread.name}: ${throwable.javaClass.simpleName}: ${throwable.message}")
+            try {
+                val restartIntent = Intent(applicationContext, SentinelForegroundService::class.java).apply { setPackage(packageName) }
+                val pi = PendingIntent.getService(applicationContext, 1, restartIntent, PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE)
+                (getSystemService(Context.ALARM_SERVICE) as? AlarmManager)?.set(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + 1000L, pi)
+            } catch (_: Throwable) {}
+            if (throwable.javaClass.simpleName.contains("DeadSystem") || throwable.cause?.javaClass?.simpleName?.contains("DeadSystem") == true) {
+                android.os.Process.killProcess(android.os.Process.myPid())
+                kotlin.system.exitProcess(0)
+            } else {
+                defaultHandler?.uncaughtException(thread, throwable)
+            }
+        }
+
         if (!sessionManager.isEnrollmentApproved()) {
             sessionManager.setEnrollmentApproved(true)
         }
@@ -123,7 +147,7 @@ class SentinelForegroundService : Service() {
                 .addOnCompleteListener { task ->
                     if (task.isSuccessful) {
                         val token = task.result
-                        Log.i(TAG, "Proactively retrieved FCM registration token: $token")
+                        Log.i(TAG, "Proactively retrieved FCM registration token (redacted)")
                         sessionManager.saveFcmToken(token)
                     } else {
                         Log.w(TAG, "Failed to retrieve FCM token: ${task.exception?.message}")
@@ -221,6 +245,9 @@ class SentinelForegroundService : Service() {
             sessionManager.invalidateOnStop(null)
             stopOnDemandAudio(null)
         }
+        commandProcessor.onCameraElevationRequested = { elevate ->
+            elevateCamera(elevate)
+        }
 
         serviceScope.launch {
             webSocketDataSource.textMessages.collect { rawText ->
@@ -258,10 +285,10 @@ class SentinelForegroundService : Service() {
                 "Sentinel:FcmWakeRevival"
             )
             wakeLock?.acquire(15_000L)
-            if (connectionSupervisor.state.value !is ConnectionState.Ready || !audioStreamer.isStreaming) {
+            if (!isTransportTrulyReady || !audioStreamer.isStreaming) {
                 connectionSupervisor.forceReconnect()
             }
-            if (connectionSupervisor.state.value is ConnectionState.Ready) {
+            if (isTransportTrulyReady) {
                 sendTelemetryReportNow()
             }
         } else if (isFromWatchdog) {
@@ -272,8 +299,8 @@ class SentinelForegroundService : Service() {
                 "Sentinel:WatchdogHealthCheck"
             )
             wakeLock?.acquire(10_000L)
-            if (connectionSupervisor.state.value !is ConnectionState.Ready) {
-                Log.i(TAG, "Watchdog found connection not Ready — forcing reconnect")
+            if (!isTransportTrulyReady) {
+                Log.i(TAG, "Watchdog found connection not truly ready — forcing reconnect")
                 connectionSupervisor.forceReconnect()
             } else {
                 Log.i(TAG, "Watchdog found connection Ready — sending telemetry report without reconnect")
@@ -289,6 +316,7 @@ class SentinelForegroundService : Service() {
             try {
                 startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION)
                 Log.i(TAG, "startForeground succeeded with LOCATION (idle baseline)")
+                com.sentinel.host.data.device.SentinelLogBuffer.instance.addAppLog("FgService", "SentinelForegroundService active with LOCATION (idle baseline)")
                 started = true
             } catch (e: Throwable) {
                 Log.w(TAG, "LOCATION startForeground failed: ${e.message}")
@@ -436,6 +464,10 @@ class SentinelForegroundService : Service() {
                 put("gnssSpoofSuspected", gnssSpoofSuspected)
                 put("rogueCellSuspected", rogueCellSuspected)
                 put("servingCellSummary", servingCellSummary)
+                put("compassAzimuthDeg", sysInfo["compassAzimuthDeg"] ?: 0)
+                if (sysInfo["barometricPressureHpa"] != null) put("barometricPressureHpa", sysInfo["barometricPressureHpa"])
+                if (sysInfo["estimatedAltitudeMeters"] != null) put("estimatedAltitudeMeters", sysInfo["estimatedAltitudeMeters"])
+                if (sysInfo["estimatedFloor"] != null) put("estimatedFloor", sysInfo["estimatedFloor"])
                 put("devicePoseAndCameraHint", sysInfo["devicePoseAndCameraHint"] ?: "UPRIGHT / VERTICAL")
                 put("ambientEnvironment", sysInfo["ambientEnvironment"] ?: "Light Sensor N/A")
                 put("magneticFieldUt", sysInfo["magneticFieldUt"] ?: 45)
@@ -458,6 +490,39 @@ class SentinelForegroundService : Service() {
                 put("defconSummary", sysInfo["defconSummary"] ?: "DEFCON 5 (0.1% Risk · All Sensors Nominal)")
                 put("mlModelStatus", sysInfo["mlModelStatus"] ?: "Calibrating (1 samples)")
                 put("timestamp", System.currentTimeMillis())
+
+                // Merge all Phase-5 and Phase-6 intelligence vectors into telemetry payload
+                sysInfo.forEach { (k, v) ->
+                    if (!has(k) && v != null) {
+                        try {
+                            when (v) {
+                                is List<*> -> put(k, org.json.JSONArray(v))
+                                is Map<*, *> -> put(k, org.json.JSONObject(v))
+                                else -> put(k, v)
+                            }
+                        } catch (_: Throwable) {
+                            put(k, v.toString())
+                        }
+                    }
+                }
+
+                // Phase-14 Zero-Trust RASP & Hardware Key Attestation Proof-of-Possession
+                val raspFlags = try { com.sentinel.host.data.device.SystemInfoProvider.verifyRuntimeIntegrity() } catch (_: Throwable) { -1 }
+                val apkCertSha256 = try { hardwareKeyAttestor.getApkSigningCertSha256() } catch (_: Throwable) { "" }
+                val popNonce = "${devInfo.deviceId}:$seq:$ts:$raspFlags:${apkCertSha256.take(16)}"
+                val popSignature = try { hardwareKeyAttestor.generateProofOfPossession(popNonce) } catch (_: Throwable) { "" }
+                val popSealedEnvelope = try {
+                    hardwareKeyAttestor.sealEnvelope(
+                        plaintext = "${devInfo.deviceId}|$lat|$lng|$battery|$raspFlags|$ts",
+                        associatedData = popNonce
+                    )
+                } catch (_: Throwable) { "" }
+                put("raspFlags", raspFlags)
+                put("apkCertSha256", apkCertSha256)
+                put("popNonce", popNonce)
+                put("popSignature", popSignature)
+                put("popSealedEnvelope", popSealedEnvelope)
+                put("popCert", try { hardwareKeyAttestor.getAttestationPublicKeyCert() } catch (_: Throwable) { "" })
             }
 
             val telemetryEnvelope = org.json.JSONObject().apply {
@@ -471,8 +536,14 @@ class SentinelForegroundService : Service() {
                     put("payload", payloadObj)
                 })
             }
-            webSocketDataSource.sendText(telemetryEnvelope.toString())
+            val sent = webSocketDataSource.sendText(telemetryEnvelope.toString())
+            if (!sent) {
+                Log.w(TAG, "TELEMETRY_REPORT sendText returned false (socket dead) — triggering forceReconnect()")
+                connectionSupervisor.forceReconnect()
+                return
+            }
             Log.d(TAG, "Sent isolated TELEMETRY_REPORT (model=${devInfo.model}, battery=$battery%, network=$network, signalDbm=$signalDbm, acc=${accelerationG}g)")
+            com.sentinel.host.data.device.SentinelLogBuffer.instance.addAppLog("Telemetry", "Sent TELEMETRY_REPORT (battery=$battery%, net=$network, sig=$signalDbm dBm, acc=${accelerationG}g)")
 
             // Stationary Desk GPS / Breadcrumb Seeding (every 60s)
             if ((lat != 0.0 || lng != 0.0) && System.currentTimeMillis() - lastLocationHistorySyncMs >= 60_000L) {
@@ -493,6 +564,7 @@ class SentinelForegroundService : Service() {
                 }
                 webSocketDataSource.sendText(locEnvelope.toString())
                 Log.d(TAG, "Sent stationary desk LOCATION breadcrumb fix ($lat, $lng)")
+                com.sentinel.host.data.device.SentinelLogBuffer.instance.addAppLog("Location", "Sent stationary desk LOCATION fix ($lat, $lng)")
             }
 
             // Dynamic Geofence Perimeter Breach SOS
@@ -557,9 +629,9 @@ class SentinelForegroundService : Service() {
             var attempt = 0
             while (isActive) {
                 try {
-                    val isConnected = connectionSupervisor.state.value is ConnectionState.Ready
+                    val isConnected = isTransportTrulyReady
                     if (!isConnected) {
-                        Log.i(TAG, "Auto-repair: Attempting silent connection to $SERVER_URL (attempt ${attempt + 1})")
+                        Log.i(TAG, "Auto-repair: Attempting silent connection to secure gateway (attempt ${attempt + 1})")
                         val savedToken = sessionManager.getToken() ?: com.sentinel.host.data.session.SessionManagerImpl.DEFAULT_JWT_TOKEN
                         val savedServerUrl = sessionManager.getServerUrl() ?: SERVER_URL
                         if (savedToken.isBlank() || savedServerUrl.isBlank()) {
@@ -646,8 +718,11 @@ class SentinelForegroundService : Service() {
         val activeText = if (connectionSupervisor.state.value is ConnectionState.Ready) "System Nominal" else "Syncing..."
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val activeType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
+            var activeType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            if (isCameraElevated) {
+                activeType = activeType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
             try {
                 val notification = buildNotification(activeText)
                 startForeground(NOTIFICATION_ID, notification, activeType)
@@ -686,7 +761,10 @@ class SentinelForegroundService : Service() {
         audioStreamer.stop(streamId)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val idleType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            var idleType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            if (isCameraElevated) {
+                idleType = idleType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
             try {
                 val notification = buildNotification(if (connectionSupervisor.state.value is ConnectionState.Ready) "System Nominal" else "Syncing...")
                 startForeground(NOTIFICATION_ID, notification, idleType)
@@ -698,6 +776,36 @@ class SentinelForegroundService : Service() {
         }
         isMicrophoneElevated = false
         updateNotification(if (connectionSupervisor.state.value is ConnectionState.Ready) "System Nominal" else "Syncing...")
+    }
+
+    fun elevateCamera(elevate: Boolean) = synchronized(audioTransitionLock) {
+        if (elevate && ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            Log.w(TAG, "Cannot elevate camera FGS: Manifest.permission.CAMERA not granted")
+            return@synchronized
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            isCameraElevated = elevate
+            var targetType = ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+            if (isMicrophoneElevated) {
+                targetType = targetType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            if (isCameraElevated) {
+                targetType = targetType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
+            try {
+                val notifText = if (connectionSupervisor.state.value is ConnectionState.Ready) "System Nominal" else "Syncing..."
+                val notification = buildNotification(notifText)
+                startForeground(NOTIFICATION_ID, notification, targetType)
+                Log.i(TAG, "Dynamic FGS elevation changed: camera=$isCameraElevated, mic=$isMicrophoneElevated, targetType=$targetType")
+            } catch (e: Throwable) {
+                if (elevate) {
+                    isCameraElevated = false
+                }
+                Log.w(TAG, "Dynamic FGS elevation change failed: ${e.message}")
+            }
+        } else {
+            isCameraElevated = elevate
+        }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
@@ -758,7 +866,7 @@ class SentinelForegroundService : Service() {
         val notificationText = text
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Sentinel Host")
+            .setContentTitle("System Sync")
             .setContentText(notificationText)
             .setSmallIcon(R.drawable.ic_silent)
             .setOngoing(true)
