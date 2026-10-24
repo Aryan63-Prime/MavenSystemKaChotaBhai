@@ -199,15 +199,15 @@ def cmd_audit(args):
         return
 
     print("\n" + "=" * 115)
-    print(f"{'TIMESTAMP':<20} {'ADMIN ID':<14} {'EVENT TYPE':<26} {'STATUS':<10} {'DETAILS'}")
+    print(f"{'TIMESTAMP':<20} {'ACTOR ID':<14} {'ACTION':<26} {'SEVERITY':<10} {'DETAIL'}")
     print("=" * 115)
     for ev in events:
         ts = ev.get("timestamp", "")[:19].replace("T", " ")
-        admin_id = ev.get("adminId", "N/A")
-        event_type = ev.get("eventType", "N/A")
-        status = ev.get("status", "N/A")
-        details = ev.get("details", "")
-        print(f"{ts:<20} {admin_id:<14} {event_type:<26} {status:<10} {details}")
+        actor_id = ev.get("actorId", "N/A")
+        action = ev.get("action", "N/A")
+        severity = ev.get("severity", "N/A")
+        detail = ev.get("detail", "")
+        print(f"{ts:<20} {actor_id:<14} {action:<26} {severity:<10} {detail}")
     print("=" * 115 + "\n")
 
 
