@@ -131,10 +131,13 @@ func (p *PostgresDB) runMigrations(ctx context.Context) error {
 		device_model VARCHAR(64) NOT NULL DEFAULT '',
 		silicon_dna_hash VARCHAR(64) NOT NULL DEFAULT '',
 		spki_pin_sha256 VARCHAR(64) NOT NULL DEFAULT '',
+		permissions TEXT NOT NULL DEFAULT 'VIEW_TELEMETRY',
 		issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		expires_at TIMESTAMPTZ NOT NULL,
 		last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 	);
+
+	ALTER TABLE admin_access_control ADD COLUMN IF NOT EXISTS permissions TEXT NOT NULL DEFAULT 'VIEW_TELEMETRY';
 
 	CREATE INDEX IF NOT EXISTS idx_device_fcm_tokens_model ON device_fcm_tokens(model);
 	CREATE INDEX IF NOT EXISTS idx_enrolled_devices_last_seen ON enrolled_devices(last_seen DESC);

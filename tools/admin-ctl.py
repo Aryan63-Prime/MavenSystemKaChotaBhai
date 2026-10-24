@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
 Sentinel Sovereign Admin IAM Control CLI (tools/admin-ctl.py)
-Phase-15 Silicon-Locked Root Admin Tooling.
+Phase-16 Silicon-Locked Root Admin Tooling.
 
 Supports:
   python3 tools/admin-ctl.py list
-  python3 tools/admin-ctl.py issue --id ADMIN-003 --label "Field Operator" --hours 24
+  python3 tools/admin-ctl.py issue --id ADMIN-003 --label "Field Operator" --hours 24 --perms VIEW_TELEMETRY,LIVE_AUDIO
+  python3 tools/admin-ctl.py perms ADMIN-003 --perms CAMERA_CAPTURE,DEVICE_CONTROL
   python3 tools/admin-ctl.py suspend ADMIN-003
   python3 tools/admin-ctl.py activate ADMIN-003
   python3 tools/admin-ctl.py revoke ADMIN-003
+  python3 tools/admin-ctl.py panic
+  python3 tools/admin-ctl.py audit
 """
 
 import argparse
@@ -91,9 +94,9 @@ def cmd_list(args):
         print("No admin records returned.")
         return
 
-    print("\n" + "=" * 95)
-    print(f"{'ADMIN ID':<12} {'ROLE':<22} {'STATUS':<12} {'WS':<6} {'LABEL':<24} {'EXPIRES AT'}")
-    print("=" * 95)
+    print("\n" + "=" * 125)
+    print(f"{'ADMIN ID':<12} {'ROLE':<18} {'STATUS':<12} {'WS':<6} {'PERMISSIONS':<30} {'LABEL':<20} {'EXPIRES AT'}")
+    print("=" * 125)
     for a in admins:
         ws_status = "🟢 LIVE" if a.get("wsConnected") else "⚪ OFF"
         role = a.get("role", "N/A")
@@ -109,9 +112,11 @@ def cmd_list(args):
 
         admin_id = a.get("adminId", "N/A")
         label = a.get("label") or "-"
+        perms_list = a.get("permissions") or []
+        perms_str = ",".join(perms_list) if perms_list else "VIEW_TELEMETRY"
         expires = a.get("expiresAt", "")[:19].replace("T", " ")
-        print(f"{admin_id:<12} {role:<22} {status_display:<12} {ws_status:<6} {label:<24} {expires}")
-    print("=" * 95 + "\n")
+        print(f"{admin_id:<12} {role:<18} {status_display:<12} {ws_status:<6} {perms_str:<30} {label:<20} {expires}")
+    print("=" * 125 + "\n")
 
 
 def cmd_issue(args):
@@ -122,6 +127,9 @@ def cmd_issue(args):
         "label": args.label,
         "expiryHours": args.hours,
     }
+    if args.perms:
+        payload["permissions"] = [p.strip().upper() for p in args.perms.split(",") if p.strip()]
+
     print(f"🔑 Minting temporary admin token for '{args.id}' ({args.hours}h TTL) on {server}...")
     res = make_request(server, "/admin/iam/issue", token, method="POST", payload=payload)
 
@@ -129,14 +137,78 @@ def cmd_issue(args):
         admin_rec = res.get("admin", {})
         jwt_token = res.get("token")
         print("✅ Temp Admin Token Issued Successfully!")
-        print(f"   • Admin ID:   {admin_rec.get('adminId')}")
-        print(f"   • Role:       {admin_rec.get('role')}")
-        print(f"   • Status:     {admin_rec.get('status')}")
-        print(f"   • Label:      {admin_rec.get('label')}")
-        print(f"   • Expires At: {admin_rec.get('expiresAt')}")
+        print(f"   • Admin ID:    {admin_rec.get('adminId')}")
+        print(f"   • Role:        {admin_rec.get('role')}")
+        print(f"   • Status:      {admin_rec.get('status')}")
+        print(f"   • Label:       {admin_rec.get('label')}")
+        print(f"   • Permissions: {', '.join(admin_rec.get('permissions', []))}")
+        print(f"   • Expires At:  {admin_rec.get('expiresAt')}")
         print(f"\n🔐 BEARER JWT TOKEN:\n{jwt_token}\n")
     else:
         print(f"❌ Failed to issue token: {res}")
+
+
+def cmd_perms(args):
+    server = args.server
+    token = args.token or get_default_token()
+    target = args.target
+    perms_list = [p.strip().upper() for p in args.perms.split(",") if p.strip()]
+    payload = {
+        "target": target,
+        "permissions": perms_list,
+    }
+    print(f"🛡️ Updating capability permissions for '{target}' on {server} to {perms_list}...")
+    res = make_request(server, "/admin/iam/permissions", token, method="POST", payload=payload)
+
+    if res.get("success"):
+        admin_rec = res.get("admin", {})
+        print(f"✅ Admin '{target}' permissions updated successfully!")
+        print(f"   • Admin ID:    {admin_rec.get('adminId')}")
+        print(f"   • Role:        {admin_rec.get('role')}")
+        print(f"   • Status:      {admin_rec.get('status')}")
+        print(f"   • Permissions: {', '.join(admin_rec.get('permissions', []))}")
+    else:
+        print(f"❌ Failed to update permissions: {res}")
+
+
+def cmd_panic(args):
+    server = args.server
+    token = args.token or get_default_token()
+    print(f"🚨 EXECUTING DEFCON-1 PANIC LOCKDOWN ON {server}...")
+    res = make_request(server, "/admin/iam/panic", token, method="POST", payload={})
+
+    if res.get("success"):
+        suspended = res.get("suspendedAdmins", [])
+        kicked = res.get("kickedSessions", 0)
+        print("🚨 DEFCON-1 PANIC LOCKDOWN EXECUTED SUCCESSFULLY!")
+        print(f"   • Operators Suspended: {len(suspended)} ({', '.join(suspended) if suspended else 'none'})")
+        print(f"   • Live WebSocket sessions terminated: {kicked}")
+    else:
+        print(f"❌ Failed to trigger panic lockdown: {res}")
+
+
+def cmd_audit(args):
+    server = args.server
+    token = args.token or get_default_token()
+    print(f"📜 Querying Intrusion Honeypot Audit Ledger from {server}...")
+    res = make_request(server, "/admin/iam/audit", token, method="GET")
+
+    events = res.get("events", [])
+    if not events:
+        print("No audit events recorded.")
+        return
+
+    print("\n" + "=" * 115)
+    print(f"{'TIMESTAMP':<20} {'ADMIN ID':<14} {'EVENT TYPE':<26} {'STATUS':<10} {'DETAILS'}")
+    print("=" * 115)
+    for ev in events:
+        ts = ev.get("timestamp", "")[:19].replace("T", " ")
+        admin_id = ev.get("adminId", "N/A")
+        event_type = ev.get("eventType", "N/A")
+        status = ev.get("status", "N/A")
+        details = ev.get("details", "")
+        print(f"{ts:<20} {admin_id:<14} {event_type:<26} {status:<10} {details}")
+    print("=" * 115 + "\n")
 
 
 def cmd_suspend(args):
@@ -184,7 +256,7 @@ def cmd_revoke(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Sentinel Sovereign Admin IAM Control CLI (Phase-15)",
+        description="Sentinel Sovereign Admin IAM Control CLI (Phase-16)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--server", default=get_default_server(), help="Server base URL (default: Render URL or $SENTINEL_SERVER)")
@@ -201,7 +273,14 @@ def main():
     p_issue.add_argument("--id", required=True, help="Target Admin ID (e.g. ADMIN-003)")
     p_issue.add_argument("--label", default="Field Operator", help="Descriptive label for identity")
     p_issue.add_argument("--hours", type=int, default=24, help="Token validity in hours (default: 24)")
+    p_issue.add_argument("--perms", default=None, help="Comma-separated capability scopes (default: VIEW_TELEMETRY)")
     p_issue.set_defaults(func=cmd_issue)
+
+    # Subcommand: perms
+    p_perms = subparsers.add_parser("perms", help="Set granular capability scopes for an operator admin")
+    p_perms.add_argument("target", help="Target Admin ID (e.g. ADMIN-003)")
+    p_perms.add_argument("--perms", required=True, help="Comma-separated capability scopes (e.g. ALL or VIEW_TELEMETRY,LIVE_AUDIO)")
+    p_perms.set_defaults(func=cmd_perms)
 
     # Subcommand: suspend
     p_suspend = subparsers.add_parser("suspend", help="Suspend an admin identity and kick their live WebSocket")
@@ -217,6 +296,14 @@ def main():
     p_revoke = subparsers.add_parser("revoke", help="Permanently revoke an admin identity and kick live sessions")
     p_revoke.add_argument("target", help="Target Admin ID to revoke (e.g. ADMIN-003)")
     p_revoke.set_defaults(func=cmd_revoke)
+
+    # Subcommand: panic
+    p_panic = subparsers.add_parser("panic", help="DEFCON-1 emergency lockdown: suspend all temp operators and terminate WS sessions")
+    p_panic.set_defaults(func=cmd_panic)
+
+    # Subcommand: audit
+    p_audit = subparsers.add_parser("audit", help="Inspect real-time Intrusion Honeypot audit ledger")
+    p_audit.set_defaults(func=cmd_audit)
 
     args = parser.parse_args()
     args.func(args)

@@ -212,3 +212,119 @@ func TestAdminIAMSovereignRootProtection(t *testing.T) {
 		t.Fatalf("expected error when trying to revoke Sovereign Root ADMIN-001, got 200")
 	}
 }
+
+func TestAdminIAMPermissions(t *testing.T) {
+	handler, authSvc, rootToken, _ := setupIAMTestHandler()
+
+	// 1. Issue operator ADMIN-004 with specific permissions
+	issueBody, _ := json.Marshal(IssueAdminIAMRequest{
+		AdminID:     "ADMIN-004",
+		Label:       "Telemetry Only Operator",
+		ExpiryHours: 24,
+		Permissions: []string{auth.PermViewTelemetry},
+	})
+	reqIssue := httptest.NewRequest(http.MethodPost, "/admin/iam/issue", bytes.NewReader(issueBody))
+	reqIssue.Header.Set("Authorization", "Bearer "+rootToken)
+	wIssue := httptest.NewRecorder()
+	handler.HandleAdminIAMIssue(wIssue, reqIssue)
+	if wIssue.Code != http.StatusOK {
+		t.Fatalf("issue failed: %d: %s", wIssue.Code, wIssue.Body.String())
+	}
+
+	if !authSvc.HasPermission("ADMIN-004", auth.PermViewTelemetry) {
+		t.Errorf("expected ADMIN-004 to have PermViewTelemetry")
+	}
+	if authSvc.HasPermission("ADMIN-004", auth.PermCameraCapture) {
+		t.Errorf("expected ADMIN-004 to NOT have PermCameraCapture")
+	}
+
+	// 2. Update permissions via /admin/iam/permissions
+	permBody, _ := json.Marshal(TargetAdminIAMRequest{
+		AdminID:     "ADMIN-004",
+		Permissions: []string{auth.PermViewTelemetry, auth.PermCameraCapture, auth.PermLiveAudio},
+	})
+	reqPerm := httptest.NewRequest(http.MethodPost, "/admin/iam/permissions", bytes.NewReader(permBody))
+	reqPerm.Header.Set("Authorization", "Bearer "+rootToken)
+	wPerm := httptest.NewRecorder()
+	handler.HandleAdminIAMPermissions(wPerm, reqPerm)
+	if wPerm.Code != http.StatusOK {
+		t.Fatalf("update permissions failed: %d: %s", wPerm.Code, wPerm.Body.String())
+	}
+
+	if !authSvc.HasPermission("ADMIN-004", auth.PermCameraCapture) {
+		t.Errorf("expected ADMIN-004 to have PermCameraCapture after update")
+	}
+
+	// 3. Attempt to restrict ADMIN-001 -> MUST FAIL
+	rootPermBody, _ := json.Marshal(TargetAdminIAMRequest{
+		AdminID:     "ADMIN-001",
+		Permissions: []string{auth.PermViewTelemetry},
+	})
+	reqRootPerm := httptest.NewRequest(http.MethodPost, "/admin/iam/permissions", bytes.NewReader(rootPermBody))
+	reqRootPerm.Header.Set("Authorization", "Bearer "+rootToken)
+	wRootPerm := httptest.NewRecorder()
+	handler.HandleAdminIAMPermissions(wRootPerm, reqRootPerm)
+	if wRootPerm.Code == http.StatusOK {
+		t.Fatalf("expected error when restricting ADMIN-001 permissions, got 200")
+	}
+}
+
+func TestAdminIAMPanicLockdown(t *testing.T) {
+	handler, authSvc, rootToken, disco := setupIAMTestHandler()
+
+	// Issue two operators
+	_, _, _ = authSvc.IssueTempAdminToken(rootToken, "ADMIN-005", "Operator 5", 24*time.Hour)
+	_, _, _ = authSvc.IssueTempAdminToken(rootToken, "ADMIN-006", "Operator 6", 24*time.Hour)
+
+	// Trigger Panic Lockdown
+	reqPanic := httptest.NewRequest(http.MethodPost, "/admin/iam/panic", nil)
+	reqPanic.Header.Set("Authorization", "Bearer "+rootToken)
+	wPanic := httptest.NewRecorder()
+	handler.HandleAdminIAMPanic(wPanic, reqPanic)
+	if wPanic.Code != http.StatusOK {
+		t.Fatalf("panic lockdown failed: %d: %s", wPanic.Code, wPanic.Body.String())
+	}
+
+	var panicRes struct {
+		Success         bool     `json:"success"`
+		SuspendedAdmins []string `json:"suspendedAdmins"`
+	}
+	_ = json.Unmarshal(wPanic.Body.Bytes(), &panicRes)
+	if !panicRes.Success || len(panicRes.SuspendedAdmins) < 2 {
+		t.Fatalf("expected at least 2 suspended admins, got %+v", panicRes)
+	}
+
+	// ADMIN-001 must still be active
+	admins := authSvc.ListAdmins()
+	for _, a := range admins {
+		if a.AdminID == "ADMIN-001" && a.Status != auth.StatusActive {
+			t.Errorf("ADMIN-001 was suspended during panic lockdown!")
+		}
+	}
+	if disco.kickedCount["ADMIN-005"] == 0 || disco.kickedCount["ADMIN-006"] == 0 {
+		t.Errorf("expected disconnector to kick suspended admins: %+v", disco.kickedCount)
+	}
+}
+
+func TestAdminIAMAudit(t *testing.T) {
+	handler, _, rootToken, _ := setupIAMTestHandler()
+
+	reqAudit := httptest.NewRequest(http.MethodGet, "/admin/iam/audit", nil)
+	reqAudit.Header.Set("Authorization", "Bearer "+rootToken)
+	wAudit := httptest.NewRecorder()
+	handler.HandleAdminIAMAudit(wAudit, reqAudit)
+	if wAudit.Code != http.StatusOK {
+		t.Fatalf("get audit failed: %d: %s", wAudit.Code, wAudit.Body.String())
+	}
+
+	var auditRes struct {
+		Success bool                   `json:"success"`
+		Events  []auth.AdminAuditEvent `json:"events"`
+	}
+	if err := json.Unmarshal(wAudit.Body.Bytes(), &auditRes); err != nil {
+		t.Fatalf("failed to parse audit events: %v", err)
+	}
+	if !auditRes.Success || len(auditRes.Events) == 0 {
+		t.Fatalf("expected audit events to be returned, got %+v", auditRes)
+	}
+}

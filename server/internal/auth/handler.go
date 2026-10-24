@@ -65,3 +65,16 @@ func (h *Handler) Service() *Service {
 	}
 	return h.service
 }
+
+func (h *Handler) HasPermission(identity, requiredPerm string) bool {
+	if h == nil || h.service == nil {
+		return true
+	}
+	return h.service.HasPermission(identity, requiredPerm)
+}
+
+func (h *Handler) RecordAuditEvent(severity, actorID, action, detail, remoteIP, deviceModel, siliconDNA string) {
+	if h != nil && h.service != nil {
+		h.service.RecordAuditEvent(severity, actorID, action, detail, remoteIP, deviceModel, siliconDNA)
+	}
+}

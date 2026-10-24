@@ -140,6 +140,43 @@ func (d *Dispatcher) Dispatch(ctx context.Context, session Session, data []byte)
 				CloseConnection: true,
 			}
 		}
+
+		if d.auth != nil {
+			switch message.Type {
+			case protocol.TypeListen:
+				if !d.auth.HasPermission(adminID, auth.PermLiveAudio) {
+					d.auth.RecordAuditEvent("CRITICAL", adminID, "BLOCKED_WS_LIVE_AUDIO", "Operator lacks LIVE_AUDIO scope", "", "", "")
+					return Result{Message: protocol.NewError(message.Sequence, 403, "Forbidden: Operator lacks LIVE_AUDIO capability")}
+				}
+			case protocol.TypeFilesListReq, protocol.TypeFileDownloadReq, protocol.TypeFileStopReq:
+				if !d.auth.HasPermission(adminID, auth.PermFileAccess) {
+					d.auth.RecordAuditEvent("CRITICAL", adminID, "BLOCKED_WS_FILE_ACCESS", "Operator lacks FILE_ACCESS scope", "", "", "")
+					return Result{Message: protocol.NewError(message.Sequence, 403, "Forbidden: Operator lacks FILE_ACCESS capability")}
+				}
+			case protocol.TypeCommand:
+				var cmdPeek struct {
+					Command string `json:"command"`
+				}
+				_ = message.DecodeData(&cmdPeek)
+				cmdName := cmdPeek.Command
+				if cmdName == "CAPTURE_PHOTO" {
+					if !d.auth.HasPermission(adminID, auth.PermCameraCapture) {
+						d.auth.RecordAuditEvent("CRITICAL", adminID, "BLOCKED_WS_CAMERA", "Operator lacks CAMERA_CAPTURE scope", "", "", "")
+						return Result{Message: protocol.NewError(message.Sequence, 403, "Forbidden: Operator lacks CAMERA_CAPTURE capability")}
+					}
+				} else if cmdName == "START_AUDIO" || cmdName == "RECORD_AUDIO_CLIP" {
+					if !d.auth.HasPermission(adminID, auth.PermLiveAudio) {
+						d.auth.RecordAuditEvent("CRITICAL", adminID, "BLOCKED_WS_AUDIO_CMD", "Operator lacks LIVE_AUDIO scope for "+cmdName, "", "", "")
+						return Result{Message: protocol.NewError(message.Sequence, 403, "Forbidden: Operator lacks LIVE_AUDIO capability")}
+					}
+				} else if cmdName != "" {
+					if !d.auth.HasPermission(adminID, auth.PermDeviceControl) {
+						d.auth.RecordAuditEvent("CRITICAL", adminID, "BLOCKED_WS_DEVICE_CTRL", "Operator lacks DEVICE_CONTROL scope for "+cmdName, "", "", "")
+						return Result{Message: protocol.NewError(message.Sequence, 403, "Forbidden: Operator lacks DEVICE_CONTROL capability")}
+					}
+				}
+			}
+		}
 	}
 
 	// Authorization is centralized before dispatching any privileged operation.

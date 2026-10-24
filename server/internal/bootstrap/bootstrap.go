@@ -129,6 +129,9 @@ func Build() (*app.Application, error) {
 	gw.HandleFunc("/admin/iam/activate", adminHandler.HandleAdminIAMActivate)
 	gw.HandleFunc("/admin/iam/revoke", adminHandler.HandleAdminIAMRevoke)
 	gw.HandleFunc("/admin/iam/status", adminHandler.HandleAdminIAMStatus)
+	gw.HandleFunc("/admin/iam/permissions", adminHandler.HandleAdminIAMPermissions)
+	gw.HandleFunc("/admin/iam/panic", adminHandler.HandleAdminIAMPanic)
+	gw.HandleFunc("/admin/iam/audit", adminHandler.HandleAdminIAMAudit)
 
 	application := &app.Application{
 		Config:  cfg,

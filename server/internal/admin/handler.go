@@ -261,11 +261,17 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) bool {
 
 	identity, err := h.authenticator.Authenticate(token)
 	if err != nil {
+		if authSvc := h.getAuthService(); authSvc != nil {
+			authSvc.RecordAuditEvent("CRITICAL", "UNAUTH_HTTP", "REJECTED_ADMIN_REQUEST", err.Error(), r.RemoteAddr, r.Header.Get("X-Sentinel-Device-Model"), r.Header.Get("X-Sentinel-Silicon-DNA"))
+		}
 		writeError(w, http.StatusUnauthorized, "Unauthorized")
 		return false
 	}
 
 	if !auth.IsAdminIdentity(identity) {
+		if authSvc := h.getAuthService(); authSvc != nil {
+			authSvc.RecordAuditEvent("CRITICAL", identity, "NON_ADMIN_IDENTITY", "Forbidden identity presented", r.RemoteAddr, r.Header.Get("X-Sentinel-Device-Model"), r.Header.Get("X-Sentinel-Silicon-DNA"))
+		}
 		writeError(w, http.StatusForbidden, "Forbidden")
 		return false
 	}
@@ -287,6 +293,9 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) bool {
 		}
 		popRes := auth.GetDefaultPopVerifier().VerifySovereignAdminProof(proof)
 		if !popRes.Verified {
+			if authSvc := h.getAuthService(); authSvc != nil {
+				authSvc.RecordAuditEvent("CRITICAL", identity, "SILICON_SIG_FAILED", popRes.Status, r.RemoteAddr, proof.DeviceModel, proof.SiliconDNAHash)
+			}
 			writeError(w, http.StatusForbidden, "Hardware silicon signature verification failed: "+popRes.Status)
 			return false
 		}
@@ -294,6 +303,7 @@ func (h *Handler) authorize(w http.ResponseWriter, r *http.Request) bool {
 			authSvc := h.getAuthService()
 			if authSvc != nil {
 				if err := authSvc.BindSovereignSilicon("ADMIN-001", proof.DeviceModel, proof.SiliconDNAHash, popRes.SPKIPin); err != nil {
+					authSvc.RecordAuditEvent("CRITICAL", identity, "SILICON_BIND_FAILED", err.Error(), r.RemoteAddr, proof.DeviceModel, proof.SiliconDNAHash)
 					writeError(w, http.StatusForbidden, err.Error())
 					return false
 				}
@@ -353,6 +363,7 @@ type AdminIAMEntry struct {
 	DeviceModel    string    `json:"deviceModel,omitempty"`
 	SiliconDNAHash string    `json:"siliconDnaHash,omitempty"`
 	SpkiPinSHA256  string    `json:"spkiPinSha256,omitempty"`
+	Permissions    []string  `json:"permissions,omitempty"`
 	IssuedAt       time.Time `json:"issuedAt"`
 	ExpiresAt      time.Time `json:"expiresAt"`
 	LastSeenAt     time.Time `json:"lastSeenAt"`
@@ -368,27 +379,33 @@ type ListAdminIAMResponse struct {
 
 // IssueAdminIAMRequest is the request body for POST /admin/iam/issue.
 type IssueAdminIAMRequest struct {
-	AdminID     string `json:"adminId"`
-	Label       string `json:"label"`
-	ExpiryHours int    `json:"expiryHours"`
-	Hours       int    `json:"hours"`
+	AdminID     string   `json:"adminId"`
+	Label       string   `json:"label"`
+	ExpiryHours int      `json:"expiryHours"`
+	Hours       int      `json:"hours"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
-// TargetAdminIAMRequest is the request body for POST /admin/iam/(suspend|activate|revoke|status).
+// TargetAdminIAMRequest is the request body for POST /admin/iam/(suspend|activate|revoke|status|permissions).
 type TargetAdminIAMRequest struct {
-	AdminID string `json:"adminId"`
-	Target  string `json:"target"`
-	Status  string `json:"status,omitempty"`
+	AdminID     string   `json:"adminId"`
+	Target      string   `json:"target"`
+	Status      string   `json:"status,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // HandleAdminIAM routes /admin/iam endpoints.
 func (h *Handler) HandleAdminIAM(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimSuffix(r.URL.Path, "/")
 	if r.Method == http.MethodGet {
+		if strings.HasSuffix(path, "/audit") {
+			h.HandleAdminIAMAudit(w, r)
+			return
+		}
 		h.HandleAdminIAMList(w, r)
 		return
 	}
 	if r.Method == http.MethodPost {
-		path := strings.TrimSuffix(r.URL.Path, "/")
 		if strings.HasSuffix(path, "/issue") {
 			h.HandleAdminIAMIssue(w, r)
 			return
@@ -403,6 +420,14 @@ func (h *Handler) HandleAdminIAM(w http.ResponseWriter, r *http.Request) {
 		}
 		if strings.HasSuffix(path, "/revoke") {
 			h.HandleAdminIAMRevoke(w, r)
+			return
+		}
+		if strings.HasSuffix(path, "/permissions") {
+			h.HandleAdminIAMPermissions(w, r)
+			return
+		}
+		if strings.HasSuffix(path, "/panic") {
+			h.HandleAdminIAMPanic(w, r)
 			return
 		}
 		if strings.HasSuffix(path, "/status") {
@@ -449,6 +474,7 @@ func (h *Handler) HandleAdminIAMList(w http.ResponseWriter, r *http.Request) {
 			DeviceModel:    a.DeviceModel,
 			SiliconDNAHash: a.SiliconDNAHash,
 			SpkiPinSHA256:  a.SpkiPinSHA256,
+			Permissions:    a.Permissions,
 			IssuedAt:       a.IssuedAt,
 			ExpiresAt:      a.ExpiresAt,
 			LastSeenAt:     a.LastSeenAt,
@@ -496,7 +522,7 @@ func (h *Handler) HandleAdminIAMIssue(w http.ResponseWriter, r *http.Request) {
 		hours = 24
 	}
 
-	rawToken, record, err := authSvc.IssueTempAdminToken(callerToken, req.AdminID, req.Label, time.Duration(hours)*time.Hour)
+	rawToken, record, err := authSvc.IssueTempAdminToken(callerToken, req.AdminID, req.Label, time.Duration(hours)*time.Hour, req.Permissions)
 	if err != nil {
 		if errors.Is(err, auth.ErrPrivilegeDenied) {
 			writeError(w, http.StatusForbidden, "Forbidden: Only Sovereign Root Admin ADMIN-001 can issue admin tokens")
@@ -706,4 +732,98 @@ func (h *Handler) HandleAdminIAMStatus(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusBadRequest, "Invalid status: must be ACTIVE, SUSPENDED, or REVOKED")
 	}
+}
+
+// HandleAdminIAMPermissions handles POST /admin/iam/permissions.
+func (h *Handler) HandleAdminIAMPermissions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		return
+	}
+	if !h.authorize(w, r) {
+		return
+	}
+	authSvc := h.getAuthService()
+	if authSvc == nil {
+		writeError(w, http.StatusInternalServerError, "IAM Auth service not available")
+		return
+	}
+	var req TargetAdminIAMRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
+		return
+	}
+	target := strings.TrimSpace(req.Target)
+	if target == "" {
+		target = strings.TrimSpace(req.AdminID)
+	}
+	callerToken, _ := auth.BearerToken(r.Header.Get("Authorization"))
+	record, err := authSvc.SetAdminPermissions(callerToken, target, req.Permissions)
+	if err != nil {
+		if errors.Is(err, auth.ErrPrivilegeDenied) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"admin":   record,
+	})
+}
+
+// HandleAdminIAMPanic handles POST /admin/iam/panic.
+func (h *Handler) HandleAdminIAMPanic(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		writeError(w, http.StatusMethodNotAllowed, "Method Not Allowed")
+		return
+	}
+	if !h.authorize(w, r) {
+		return
+	}
+	authSvc := h.getAuthService()
+	if authSvc == nil {
+		writeError(w, http.StatusInternalServerError, "IAM Auth service not available")
+		return
+	}
+	callerToken, _ := auth.BearerToken(r.Header.Get("Authorization"))
+	suspendedIDs, err := authSvc.PanicLockdownAllTempAdmins(callerToken)
+	if err != nil {
+		if errors.Is(err, auth.ErrPrivilegeDenied) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	totalKicked := 0
+	if h.disconnector != nil {
+		for _, id := range suspendedIDs {
+			totalKicked += h.disconnector.DisconnectAdminIdentity(id, "DEFCON-1 Emergency Lockdown by Sovereign Root ADMIN-001")
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success":         true,
+		"suspendedAdmins": suspendedIDs,
+		"kickedSessions":  totalKicked,
+	})
+}
+
+// HandleAdminIAMAudit handles GET /admin/iam/audit.
+func (h *Handler) HandleAdminIAMAudit(w http.ResponseWriter, r *http.Request) {
+	if !h.allowGET(w, r) || !h.authorize(w, r) {
+		return
+	}
+	authSvc := h.getAuthService()
+	if authSvc == nil {
+		writeError(w, http.StatusInternalServerError, "IAM Auth service not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"success": true,
+		"events":  authSvc.ListAuditEvents(),
+	})
 }

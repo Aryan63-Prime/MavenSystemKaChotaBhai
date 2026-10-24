@@ -333,3 +333,192 @@ Dispatches an out-of-band high-priority Firebase Cloud Messaging (FCM) wake-up d
 }
 ```
 
+---
+
+# Sovereign Identity & Access Management (IAM) API (Phase-15/16)
+
+All `/admin/iam/*` endpoints require Sovereign Root Admin (`ADMIN-001`) authorization.
+
+## GET /admin/iam/list
+Retrieves the comprehensive registry of all sovereign and temporary admin identities, status, capability scopes, and live WebSocket connection state.
+
+* **Authentication:** Sovereign Root Bearer Token required.
+* **Response (200 OK):**
+```json
+{
+  "success": true,
+  "admins": [
+    {
+      "tokenSha256": "4a71...",
+      "adminId": "ADMIN-001",
+      "role": "SOVEREIGN_ROOT",
+      "status": "ACTIVE",
+      "label": "Sovereign Root Controller",
+      "permissions": ["ALL"],
+      "wsConnected": true,
+      "deviceModel": "I2401",
+      "siliconDnaHash": "e3b0...",
+      "issuedAt": "2026-10-24T00:00:00Z",
+      "expiresAt": "2036-10-21T00:00:00Z",
+      "lastSeenAt": "2026-10-24T12:00:00Z"
+    }
+  ]
+}
+```
+
+---
+
+## POST /admin/iam/issue
+Mints a new temporary operator admin JWT token with granular capability scopes. Stale records for the same target identity are automatically superseded.
+
+* **Authentication:** Sovereign Root Bearer Token required.
+* **Request:**
+```json
+{
+  "adminId": "ADMIN-003",
+  "label": "Field Operator",
+  "expiryHours": 24,
+  "permissions": ["VIEW_TELEMETRY", "LIVE_AUDIO"]
+}
+```
+* **Response (200 OK):**
+```json
+{
+  "success": true,
+  "token": "eyJhbGciOi...",
+  "admin": {
+    "adminId": "ADMIN-003",
+    "role": "TEMP_OPERATOR",
+    "status": "ACTIVE",
+    "label": "Field Operator",
+    "permissions": ["VIEW_TELEMETRY", "LIVE_AUDIO"],
+    "expiresAt": "2026-10-25T12:00:00Z"
+  }
+}
+```
+
+---
+
+## POST /admin/iam/permissions
+Dynamically updates capability scopes for an active or suspended operator identity. Protected root identities (`ADMIN-001`) cannot be demoted.
+
+* **Authentication:** Sovereign Root Bearer Token required.
+* **Request:**
+```json
+{
+  "target": "ADMIN-003",
+  "permissions": ["VIEW_TELEMETRY", "CAMERA_CAPTURE", "FILE_ACCESS"]
+}
+```
+* **Response (200 OK):**
+```json
+{
+  "success": true,
+  "admin": {
+    "adminId": "ADMIN-003",
+    "permissions": ["VIEW_TELEMETRY", "CAMERA_CAPTURE", "FILE_ACCESS"]
+  }
+}
+```
+
+---
+
+## POST /admin/iam/suspend
+Temporarily invalidates an operator identity and immediately terminates all active WebSocket sessions via the live kill-switch.
+
+* **Authentication:** Sovereign Root Bearer Token required.
+* **Request:**
+```json
+{
+  "target": "ADMIN-003"
+}
+```
+* **Response (200 OK):**
+```json
+{
+  "success": true,
+  "target": "ADMIN-003",
+  "kickedSessions": 1
+}
+```
+
+---
+
+## POST /admin/iam/activate
+Re-activates a suspended operator identity, restoring authorization and capability dispatch without reissuing a token.
+
+* **Authentication:** Sovereign Root Bearer Token required.
+* **Request:**
+```json
+{
+  "target": "ADMIN-003"
+}
+```
+* **Response (200 OK):**
+```json
+{
+  "success": true,
+  "target": "ADMIN-003"
+}
+```
+
+---
+
+## POST /admin/iam/revoke
+Permanently revokes an operator identity and forcibly terminates all live WebSocket sessions. Revoked identities cannot be reactivated.
+
+* **Authentication:** Sovereign Root Bearer Token required.
+* **Request:**
+```json
+{
+  "target": "ADMIN-003"
+}
+```
+* **Response (200 OK):**
+```json
+{
+  "success": true,
+  "target": "ADMIN-003",
+  "kickedSessions": 1
+}
+```
+
+---
+
+## POST /admin/iam/panic
+DEFCON-1 emergency kill-switch. Atomically revokes and invalidates **ALL** non-root operator identities and kicks every active operator WebSocket connection instantly.
+
+* **Authentication:** Sovereign Root Bearer Token required.
+* **Response (200 OK):**
+```json
+{
+  "success": true,
+  "suspendedAdmins": ["ADMIN-003", "ADMIN-004"],
+  "kickedSessions": 2
+}
+```
+
+---
+
+## GET /admin/iam/audit
+Retrieves the real-time circular Intrusion Honeypot and IAM security audit ledger (capacity: 256 events).
+
+* **Authentication:** Sovereign Root Bearer Token required.
+* **Response (200 OK):**
+```json
+{
+  "success": true,
+  "events": [
+    {
+      "id": "1",
+      "timestamp": "2026-10-24T12:05:00Z",
+      "adminId": "ADMIN-003",
+      "eventType": "SCOPE_DENIAL",
+      "status": "DENIED",
+      "details": "Operator lacks CAMERA_CAPTURE scope"
+    }
+  ]
+}
+```
+
+

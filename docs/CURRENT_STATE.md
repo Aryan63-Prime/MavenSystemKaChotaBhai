@@ -1,7 +1,7 @@
 # Project Sentinel: Current System State
 
-**Last Updated:** 2026-10-21  
-**Current System Version:** v2.4.0 (Omega Tier / Defense Readiness Condition Engine)  
+**Last Updated:** 2026-10-24  
+**Current System Version:** v2.5.0 (Phase-16 Sovereign Command Matrix & Intrusion Ledger)  
 **Status:** Feature-Complete, Mathematically Verified, & Production-Hardened  
 
 ---
@@ -10,9 +10,9 @@
 
 Project Sentinel is an enterprise real-time tactical intelligence, fleet surveillance, and endpoint protection platform comprised of three core components:
 
-1. **Server (`server`):** High-throughput Go WebSocket gateway, audio router, PostgreSQL location/telemetry store, Redis pub/sub dispatcher, and bidirectional hardware callsign resolver.
+1. **Server (`server`):** High-throughput Go WebSocket gateway, audio router, PostgreSQL location/telemetry store, Redis pub/sub dispatcher, bidirectional hardware callsign resolver, and Phase-16 Sovereign IAM Matrix with live WebSocket kill-switch and intrusion honeypot ledger.
 2. **Host Android Application (`host-app`):** Hardened Android foreground service, low-latency Opus audio streamer, online Welford self-learning sensor anomaly engine, calibrated 12-feature Bayesian DEFCON classifier, MDM/device owner anti-tamper controls, and out-of-band offline SMS wake/lock receiver.
-3. **Admin Android Application (`admin-app`):** Native Compose management console with interactive MapLibre tactical polyline mapping, automated route replay (`1x / 2x / 4x`), Kinematic $\alpha$-$\beta$ Kalman intercept projection, 4D acoustic signal DSP, hardware biometric authorization gates, and zero-trust independent threat verification.
+3. **Admin Android Application (`admin-app`):** Native Compose management console with interactive MapLibre tactical polyline mapping, automated route replay (`1x / 2x / 4x`), Kinematic $\alpha$-$\beta$ Kalman intercept projection, 4D acoustic signal DSP, hardware biometric authorization gates, Vivo iQOO 13 (`ADMIN-001`) silicon-attested root controller, and in-app Sovereign IAM Console UI.
 
 ---
 
@@ -20,6 +20,9 @@ Project Sentinel is an enterprise real-time tactical intelligence, fleet surveil
 
 ### 2.1 Backend Server (`server`)
 * ✅ **High-Capacity WebSocket Gateway:** JWT-authenticated TLS WebSocket connections with session management and graceful shutdown.
+* ✅ **Sovereign IAM Matrix & Granular Capability Scopes:** Enforces `ALL`, `VIEW_TELEMETRY`, `LIVE_AUDIO`, `CAMERA_CAPTURE`, `FILE_ACCESS`, `DEVICE_CONTROL` across WebSocket dispatch and REST endpoints.
+* ✅ **Real-Time Live WebSocket Kill-Switch & DEFCON-1 Panic:** Atomically kicks live active WebSocket sessions upon operator suspension or DEFCON-1 panic invocation.
+* ✅ **Intrusion Honeypot Audit Ledger:** Real-time in-memory circular audit ledger tracking privilege mutations, unauthorized command attempts, and scope denials.
 * ✅ **Zero-Leak Audio Routing:** Thread-safe listener registration with mutex synchronization and Redis state tracking.
 * ✅ **Bidirectional Callsign & Identity Resolution:** Supports legacy `HOST-001`, composite `HOST-001_<MODEL>`, and dynamic hardware identifiers `HOST-001-<OEM>-<HEX>` $\leftrightarrow$ `HOST-<OEM>-<HEX>`.
 * ✅ **PostgreSQL Location & Breadcrumb History:** Stores historical GPS fixes with spatial indexing and automatic 60-second stationary breadcrumb retention.
@@ -35,6 +38,8 @@ Project Sentinel is an enterprise real-time tactical intelligence, fleet surveil
 * ✅ **Full Test Suite:** 86/86 actionable tasks passing cleanly (`./gradlew testDebugUnitTest`).
 
 ### 2.3 Admin Application (`admin-app`)
+* ✅ **Vivo iQOO 13 Silicon-Locked Root Controller:** Binds `ADMIN-001` bootstrap credential strictly to authentic Vivo iQOO 13 hardware (`I2401`) using MediaDrm Widevine Keybox attestation.
+* ✅ **In-App Sovereign IAM Console Dialog (`SovereignIamDialog`):** Full Jetpack Compose management UI for minting operators with granular capability chips, one-tap JWT copy, live status switches, DEFCON-1 panic switch, and intrusion honeypot ledger.
 * ✅ **Tactical MapLibre Route Polyline & Auto-Play Replay:** Visualizes movement paths with multi-day historical filtering and interactive playback (`1x`, `2x`, `4x`).
 * ✅ **Kinematic $\alpha$-$\beta$ Kalman Intercept Filter:** Projects forward $+15\text{m}$ intercept coordinates, course over ground (COG), and velocity vectors derived from coordinate innovations ($\alpha = 0.65, \beta = 0.35$).
 * ✅ **4D Acoustic DSP Stream Classifier:** Real-time extraction of RMS, crest factor, zero-crossing rate, and lag-1 autocorrelation for speech, engine hum, and impulse classification.

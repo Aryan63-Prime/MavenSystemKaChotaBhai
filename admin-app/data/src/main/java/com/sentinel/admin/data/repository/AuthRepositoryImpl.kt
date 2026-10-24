@@ -15,7 +15,10 @@ import com.sentinel.admin.domain.repository.AuthRepository
  *
  * @param context Application context for creating EncryptedSharedPreferences.
  */
-class AuthRepositoryImpl(context: Context) : AuthRepository {
+class AuthRepositoryImpl(
+    context: Context,
+    private val allowBootstrapFallback: Boolean = com.sentinel.admin.data.security.SovereignSiliconAttestor(context).isSovereignIqoo13Hardware()
+) : AuthRepository {
 
     companion object {
         private const val PREFS_NAME = "sentinel_admin_auth"
@@ -44,13 +47,17 @@ class AuthRepositoryImpl(context: Context) : AuthRepository {
 
     override fun getToken(): String? {
         val token = prefs.getString(KEY_TOKEN, null)
-        // If stored token was previously saved but is now revoked, purge and migrate to bootstrap ADMIN-001
+        // If stored token was previously saved but is now revoked, purge and migrate to bootstrap ADMIN-001 if allowed
         if (token != null && AdminCryptoVault.isTokenRevoked(token.trim())) {
             clearToken()
-            saveToken(DEFAULT_ADMIN_TOKEN)
-            return DEFAULT_ADMIN_TOKEN
+            if (allowBootstrapFallback) {
+                saveToken(DEFAULT_ADMIN_TOKEN)
+                return DEFAULT_ADMIN_TOKEN
+            }
+            return null
         }
-        return if (!token.isNullOrBlank()) token else DEFAULT_ADMIN_TOKEN
+        if (!token.isNullOrBlank()) return token
+        return if (allowBootstrapFallback) DEFAULT_ADMIN_TOKEN else null
     }
 
     override fun saveToken(token: String) {

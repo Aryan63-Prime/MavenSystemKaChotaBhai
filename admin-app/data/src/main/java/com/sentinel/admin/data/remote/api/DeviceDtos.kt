@@ -81,3 +81,69 @@ data class BatteryHistoryResponse(
     @Json(name = "deviceId") val deviceId: String = "",
     @Json(name = "history") val history: List<BatteryHistoryDto> = emptyList()
 )
+
+@JsonClass(generateAdapter = true)
+data class AdminIamEntryDto(
+    val adminId: String = "",
+    val role: String = "",
+    val status: String = "",
+    val label: String = "",
+    val deviceModel: String? = null,
+    val siliconDnaHash: String? = null,
+    val spkiPinSha256: String? = null,
+    val permissions: List<String>? = null,
+    val expiresAt: String? = null,
+    val wsConnected: Boolean = false
+)
+
+@JsonClass(generateAdapter = true)
+data class AdminIamListResponseDto(
+    val success: Boolean = false,
+    val admins: List<AdminIamEntryDto> = emptyList()
+)
+
+@JsonClass(generateAdapter = true)
+data class IssueAdminRequestDto(
+    val adminId: String,
+    val label: String,
+    val expiryHours: Int = 24,
+    val permissions: List<String> = listOf("VIEW_TELEMETRY")
+)
+
+@JsonClass(generateAdapter = true)
+data class IssueAdminResponseDto(
+    val success: Boolean = false,
+    val token: String? = null,
+    val admin: AdminIamEntryDto? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class TargetAdminStatusRequestDto(
+    val target: String,
+    val status: String? = null,
+    val permissions: List<String>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class AdminActionResponseDto(
+    val success: Boolean = false,
+    val status: String? = null,
+    val kickedSessions: Int? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class AdminAuditEventDto(
+    val timestamp: String = "",
+    val severity: String = "INFO",
+    val actorId: String = "",
+    val action: String = "",
+    val detail: String = "",
+    val remoteIp: String? = null,
+    val deviceModel: String? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class AdminIamAuditResponseDto(
+    val success: Boolean = false,
+    val events: List<AdminAuditEventDto> = emptyList()
+)

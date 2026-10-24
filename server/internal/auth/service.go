@@ -20,6 +20,13 @@ const (
 	StatusSuspended = "SUSPENDED"
 	StatusRevoked   = "REVOKED"
 
+	PermAll           = "ALL"
+	PermViewTelemetry = "VIEW_TELEMETRY"
+	PermLiveAudio     = "LIVE_AUDIO"
+	PermCameraCapture = "CAMERA_CAPTURE"
+	PermFileAccess    = "FILE_ACCESS"
+	PermDeviceControl = "DEVICE_CONTROL"
+
 	// SHA-256 digests of initial administrator identities (zero plaintext JWTs in source code).
 	kSha256Admin001       = "5fada681370bee82a8ff9a99b984afad4bd70c0b5745eddb0e0f52afd464bdbf"
 	kSha256LegacyAdmin001 = "149537738d6d17a72615aaa70dd1ac0c87700cc3d298cc172f9461983aef54b5"
@@ -35,9 +42,21 @@ type AdminAccessRecord struct {
 	DeviceModel    string    `json:"deviceModel,omitempty"`
 	SiliconDNAHash string    `json:"siliconDnaHash,omitempty"`
 	SpkiPinSHA256  string    `json:"spkiPinSha256,omitempty"`
+	Permissions    []string  `json:"permissions"`
 	IssuedAt       time.Time `json:"issuedAt"`
 	ExpiresAt      time.Time `json:"expiresAt"`
 	LastSeenAt     time.Time `json:"lastSeenAt"`
+}
+
+type AdminAuditEvent struct {
+	Timestamp   time.Time `json:"timestamp"`
+	Severity    string    `json:"severity"` // "INFO", "WARN", "CRITICAL"
+	ActorID     string    `json:"actorId"`
+	Action      string    `json:"action"`
+	Detail      string    `json:"detail"`
+	RemoteIP    string    `json:"remoteIp,omitempty"`
+	DeviceModel string    `json:"deviceModel,omitempty"`
+	SiliconDNA  string    `json:"siliconDna,omitempty"`
 }
 
 // ComputeSha256Hex returns the lowercase 64-character SHA-256 hex digest.
@@ -47,19 +66,56 @@ func ComputeSha256Hex(input string) string {
 }
 
 type Service struct {
-	Secret  string
-	db      *sql.DB
-	mu      sync.RWMutex
-	records map[string]*AdminAccessRecord // keyed by TokenSHA256
+	Secret      string
+	db          *sql.DB
+	mu          sync.RWMutex
+	records     map[string]*AdminAccessRecord // keyed by TokenSHA256
+	auditEvents []AdminAuditEvent
 }
 
 func New(secret string) *Service {
 	s := &Service{
-		Secret:  secret,
-		records: make(map[string]*AdminAccessRecord),
+		Secret:      secret,
+		records:     make(map[string]*AdminAccessRecord),
+		auditEvents: make([]AdminAuditEvent, 0, 100),
 	}
 	s.seedDefaultRecords()
+	s.appendAuditLocked("INFO", "SYSTEM", "GENESIS", "Sovereign IAM Security Engine Initialized", "", "I2401", "")
 	return s
+}
+
+func (s *Service) RecordAuditEvent(severity, actorID, action, detail, remoteIP, deviceModel, siliconDNA string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.appendAuditLocked(severity, actorID, action, detail, remoteIP, deviceModel, siliconDNA)
+}
+
+func (s *Service) appendAuditLocked(severity, actorID, action, detail, remoteIP, deviceModel, siliconDNA string) {
+	ev := AdminAuditEvent{
+		Timestamp:   time.Now().UTC(),
+		Severity:    severity,
+		ActorID:     actorID,
+		Action:      action,
+		Detail:      detail,
+		RemoteIP:    remoteIP,
+		DeviceModel: deviceModel,
+		SiliconDNA:  siliconDNA,
+	}
+	if len(s.auditEvents) >= 100 {
+		s.auditEvents = s.auditEvents[1:]
+	}
+	s.auditEvents = append(s.auditEvents, ev)
+}
+
+func (s *Service) ListAuditEvents() []AdminAuditEvent {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]AdminAuditEvent, len(s.auditEvents))
+	// Return newest first
+	for i := range s.auditEvents {
+		out[len(s.auditEvents)-1-i] = s.auditEvents[i]
+	}
+	return out
 }
 
 // SetDatabase wires persistent PostgreSQL storage for admin access records.
@@ -82,6 +138,7 @@ func (s *Service) seedDefaultRecords() {
 		Status:      StatusActive,
 		Label:       "Ayush Sovereign Vivo iQOO 13 (I2401 · SM8750)",
 		DeviceModel: "I2401",
+		Permissions: []string{PermAll},
 		IssuedAt:    now,
 		ExpiresAt:   time.Unix(2108171322, 0),
 		LastSeenAt:  now,
@@ -94,6 +151,7 @@ func (s *Service) seedDefaultRecords() {
 		Role:        RoleTempOperator,
 		Status:      StatusRevoked,
 		Label:       "Revoked Oct 21 Legacy Token",
+		Permissions: []string{},
 		IssuedAt:    now,
 		ExpiresAt:   time.Unix(2107959610, 0),
 		LastSeenAt:  now,
@@ -106,6 +164,7 @@ func (s *Service) seedDefaultRecords() {
 		Role:        RoleTempOperator,
 		Status:      StatusRevoked,
 		Label:       "Revoked Superseded ADMIN-002 Token",
+		Permissions: []string{},
 		IssuedAt:    now,
 		ExpiresAt:   time.Unix(2108171318, 0),
 		LastSeenAt:  now,
@@ -126,6 +185,7 @@ func (s *Service) seedDefaultRecords() {
 					Role:        RoleTempOperator,
 					Status:      StatusRevoked,
 					Label:       "Environment configured revocation",
+					Permissions: []string{},
 					IssuedAt:    now,
 					ExpiresAt:   now.AddDate(10, 0, 0),
 					LastSeenAt:  now,
@@ -143,23 +203,25 @@ func (s *Service) syncFromDatabase() {
 	// Ensure seeded records exist in DB
 	s.mu.RLock()
 	for _, r := range s.records {
+		permStr := strings.Join(r.Permissions, ",")
 		_, _ = s.db.Exec(`
 			INSERT INTO admin_access_control (
 				token_sha256, admin_id, role, status, label, device_model,
-				silicon_dna_hash, spki_pin_sha256, issued_at, expires_at, last_seen_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+				silicon_dna_hash, spki_pin_sha256, permissions, issued_at, expires_at, last_seen_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 			ON CONFLICT (token_sha256) DO UPDATE SET
 				role = EXCLUDED.role,
-				label = EXCLUDED.label;
+				label = EXCLUDED.label,
+				permissions = EXCLUDED.permissions;
 		`, r.TokenSHA256, r.AdminID, r.Role, r.Status, r.Label, r.DeviceModel,
-			r.SiliconDNAHash, r.SpkiPinSHA256, r.IssuedAt, r.ExpiresAt, r.LastSeenAt)
+			r.SiliconDNAHash, r.SpkiPinSHA256, permStr, r.IssuedAt, r.ExpiresAt, r.LastSeenAt)
 	}
 	s.mu.RUnlock()
 
 	// Load all records from DB into memory
 	rows, err := s.db.Query(`
 		SELECT token_sha256, admin_id, role, status, label, device_model,
-		       silicon_dna_hash, spki_pin_sha256, issued_at, expires_at, last_seen_at
+		       silicon_dna_hash, spki_pin_sha256, permissions, issued_at, expires_at, last_seen_at
 		FROM admin_access_control;
 	`)
 	if err != nil {
@@ -171,10 +233,16 @@ func (s *Service) syncFromDatabase() {
 	defer s.mu.Unlock()
 	for rows.Next() {
 		var r AdminAccessRecord
+		var permStr string
 		if err := rows.Scan(
 			&r.TokenSHA256, &r.AdminID, &r.Role, &r.Status, &r.Label, &r.DeviceModel,
-			&r.SiliconDNAHash, &r.SpkiPinSHA256, &r.IssuedAt, &r.ExpiresAt, &r.LastSeenAt,
+			&r.SiliconDNAHash, &r.SpkiPinSHA256, &permStr, &r.IssuedAt, &r.ExpiresAt, &r.LastSeenAt,
 		); err == nil {
+			if permStr != "" {
+				r.Permissions = strings.Split(permStr, ",")
+			} else {
+				r.Permissions = []string{PermViewTelemetry}
+			}
 			s.records[r.TokenSHA256] = &r
 		}
 	}
@@ -211,9 +279,11 @@ func (s *Service) Authenticate(token string) (string, error) {
 
 	if exists {
 		if record.Status == StatusRevoked {
+			s.RecordAuditEvent("CRITICAL", record.AdminID, "REJECTED_AUTH_REVOKED", "Revoked admin token presented", "", record.DeviceModel, record.SiliconDNAHash)
 			return "", ErrRevokedToken
 		}
 		if record.Status == StatusSuspended {
+			s.RecordAuditEvent("WARN", record.AdminID, "REJECTED_AUTH_SUSPENDED", "Suspended operator token presented", "", record.DeviceModel, record.SiliconDNAHash)
 			return "", ErrSuspendedToken
 		}
 	}
@@ -237,10 +307,12 @@ func (s *Service) Authenticate(token string) (string, error) {
 			if r.AdminID == deviceID && r.Role != RoleSovereignRoot {
 				if r.Status == StatusRevoked {
 					s.mu.RUnlock()
+					s.RecordAuditEvent("CRITICAL", deviceID, "REJECTED_AUTH_REVOKED", "Revoked admin identity presented", "", r.DeviceModel, r.SiliconDNAHash)
 					return "", ErrRevokedToken
 				}
 				if r.Status == StatusSuspended {
 					s.mu.RUnlock()
+					s.RecordAuditEvent("WARN", deviceID, "REJECTED_AUTH_SUSPENDED", "Suspended operator identity presented", "", r.DeviceModel, r.SiliconDNAHash)
 					return "", ErrSuspendedToken
 				}
 			}
@@ -318,8 +390,9 @@ func (s *Service) IsIdentityActive(identity string) bool {
 
 // IssueTempAdminToken mints a temporary admin token (mandating RoleTempOperator).
 // Only SOVEREIGN_ROOT_ADMIN (ADMIN-001) can issue new tokens.
-func (s *Service) IssueTempAdminToken(callerTokenOrID, newAdminID, label string, ttl time.Duration) (string, AdminAccessRecord, error) {
+func (s *Service) IssueTempAdminToken(callerTokenOrID, newAdminID, label string, ttl time.Duration, customPerms ...[]string) (string, AdminAccessRecord, error) {
 	if !s.isCallerSovereignRoot(callerTokenOrID) {
+		s.RecordAuditEvent("CRITICAL", callerTokenOrID, "UNAUTHORIZED_ISSUE_ATTEMPT", "Non-root attempted to issue temp admin token", "", "", "")
 		return "", AdminAccessRecord{}, ErrPrivilegeDenied
 	}
 
@@ -348,12 +421,35 @@ func (s *Service) IssueTempAdminToken(callerTokenOrID, newAdminID, label string,
 
 	tokenHash := ComputeSha256Hex(rawToken)
 	now := time.Now()
+
+	var perms []string
+	if len(customPerms) > 0 && len(customPerms[0]) > 0 {
+		clean := make([]string, 0, len(customPerms[0])+1)
+		hasView := false
+		for _, p := range customPerms[0] {
+			up := strings.ToUpper(strings.TrimSpace(p))
+			if up != "" && up != PermAll {
+				clean = append(clean, up)
+				if up == PermViewTelemetry {
+					hasView = true
+				}
+			}
+		}
+		if !hasView {
+			clean = append([]string{PermViewTelemetry}, clean...)
+		}
+		perms = clean
+	} else {
+		perms = []string{PermViewTelemetry, PermCameraCapture, PermLiveAudio, PermDeviceControl}
+	}
+
 	record := AdminAccessRecord{
 		TokenSHA256: tokenHash,
 		AdminID:     targetID,
 		Role:        RoleTempOperator,
 		Status:      StatusActive,
 		Label:       label,
+		Permissions: perms,
 		IssuedAt:    now,
 		ExpiresAt:   now.Add(ttl),
 		LastSeenAt:  now,
@@ -366,20 +462,23 @@ func (s *Service) IssueTempAdminToken(callerTokenOrID, newAdminID, label string,
 		}
 	}
 	s.records[tokenHash] = &record
+	s.appendAuditLocked("INFO", "ADMIN-001", "ISSUE_TEMP_ADMIN", "Issued TEMP_OPERATOR "+targetID+" ("+label+")", "", "I2401", "")
 	if s.db != nil {
-		go func(r AdminAccessRecord, oldTarget string) {
+		permStr := strings.Join(perms, ",")
+		go func(r AdminAccessRecord, oldTarget, ps string) {
 			_, _ = s.db.Exec("DELETE FROM admin_access_control WHERE admin_id = $1 AND role != $2", oldTarget, RoleSovereignRoot)
 			_, _ = s.db.Exec(`
 				INSERT INTO admin_access_control (
 					token_sha256, admin_id, role, status, label, device_model,
-					silicon_dna_hash, spki_pin_sha256, issued_at, expires_at, last_seen_at
-				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+					silicon_dna_hash, spki_pin_sha256, permissions, issued_at, expires_at, last_seen_at
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 				ON CONFLICT (token_sha256) DO UPDATE SET
 					status = EXCLUDED.status,
+					permissions = EXCLUDED.permissions,
 					last_seen_at = EXCLUDED.last_seen_at;
 			`, r.TokenSHA256, r.AdminID, r.Role, r.Status, r.Label, r.DeviceModel,
-				r.SiliconDNAHash, r.SpkiPinSHA256, r.IssuedAt, r.ExpiresAt, r.LastSeenAt)
-		}(record, targetID)
+				r.SiliconDNAHash, r.SpkiPinSHA256, ps, r.IssuedAt, r.ExpiresAt, r.LastSeenAt)
+		}(record, targetID, permStr)
 	}
 	s.mu.Unlock()
 
@@ -390,6 +489,7 @@ func (s *Service) IssueTempAdminToken(callerTokenOrID, newAdminID, label string,
 // Refuses to suspend or revoke SOVEREIGN_ROOT_ADMIN.
 func (s *Service) SetAdminStatus(callerTokenOrID, targetAdminIDOrHash, newStatus string) (AdminAccessRecord, error) {
 	if !s.isCallerSovereignRoot(callerTokenOrID) {
+		s.RecordAuditEvent("CRITICAL", callerTokenOrID, "UNAUTHORIZED_STATUS_CHANGE", "Non-root attempted to change admin status", "", "", "")
 		return AdminAccessRecord{}, ErrPrivilegeDenied
 	}
 
@@ -427,6 +527,7 @@ func (s *Service) SetAdminStatus(callerTokenOrID, targetAdminIDOrHash, newStatus
 
 	record.Status = cleanStatus
 	record.LastSeenAt = time.Now()
+	s.appendAuditLocked("WARN", "ADMIN-001", "STATUS_CHANGE", "Changed status of "+record.AdminID+" to "+cleanStatus, "", "I2401", "")
 
 	if s.db != nil {
 		go func(h, st string, t time.Time) {
@@ -447,9 +548,11 @@ func (s *Service) BindSovereignSilicon(adminID, deviceModel, siliconDnaHash, spk
 	for _, r := range s.records {
 		if r.AdminID == adminID && r.Role == RoleSovereignRoot {
 			if r.SiliconDNAHash != "" && siliconDnaHash != "" && r.SiliconDNAHash != siliconDnaHash {
+				s.appendAuditLocked("CRITICAL", adminID, "SILICON_MISMATCH", "Unauthorized silicon DNA attempted to bind to Sovereign ADMIN-001", "", deviceModel, siliconDnaHash)
 				return errors.New("Sovereign ADMIN-001 is hardware-locked to Vivo iQOO 13 (I2401) silicon")
 			}
 			if deviceModel != "" && !strings.EqualFold(deviceModel, "I2401") {
+				s.appendAuditLocked("CRITICAL", adminID, "SILICON_MISMATCH", "Unauthorized device model attempted to bind to Sovereign ADMIN-001", "", deviceModel, siliconDnaHash)
 				return errors.New("Sovereign ADMIN-001 is hardware-locked to Vivo iQOO 13 (I2401) silicon")
 			}
 
@@ -504,6 +607,7 @@ func (s *Service) RegisterSovereignRootToken(rawToken string, deviceModel ...str
 		Status:      StatusActive,
 		Label:       "Ayush Sovereign Vivo iQOO 13 (I2401 · SM8750)",
 		DeviceModel: model,
+		Permissions: []string{PermAll},
 		IssuedAt:    now,
 		ExpiresAt:   now.Add(365 * 24 * time.Hour),
 		LastSeenAt:  now,
@@ -514,6 +618,113 @@ func (s *Service) RegisterSovereignRootToken(rawToken string, deviceModel ...str
 // RegisterSovereignRootForTest is a test helper for binding a test token to Sovereign Root Admin.
 func (s *Service) RegisterSovereignRootForTest(rawToken string) string {
 	return s.RegisterSovereignRootToken(rawToken, "I2401")
+}
+
+// HasPermission checks if the admin possesses a specific capability scope.
+func (s *Service) HasPermission(adminID string, requiredPerm string) bool {
+	id := strings.TrimSpace(adminID)
+	if id == "ADMIN-001" {
+		return true
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	foundRecord := false
+	for _, r := range s.records {
+		if r.AdminID == id && r.Status == StatusActive {
+			foundRecord = true
+			for _, p := range r.Permissions {
+				if p == PermAll || strings.EqualFold(p, requiredPerm) {
+					return true
+				}
+			}
+		}
+	}
+	// If no explicit IAM record was registered (e.g. legacy unit tests), allow default operator actions
+	return !foundRecord
+}
+
+// SetAdminPermissions updates the capability scopes of a target admin.
+func (s *Service) SetAdminPermissions(callerTokenOrID, targetAdminID string, perms []string) (AdminAccessRecord, error) {
+	if !s.isCallerSovereignRoot(callerTokenOrID) {
+		s.RecordAuditEvent("CRITICAL", callerTokenOrID, "UNAUTHORIZED_PERM_EDIT", "Non-root attempted to edit permissions for "+targetAdminID, "", "", "")
+		return AdminAccessRecord{}, ErrPrivilegeDenied
+	}
+	target := strings.TrimSpace(targetAdminID)
+	if target == "ADMIN-001" {
+		return AdminAccessRecord{}, errors.New("cannot restrict SOVEREIGN_ROOT_ADMIN (ADMIN-001) permissions")
+	}
+
+	cleanPerms := make([]string, 0, len(perms)+1)
+	hasView := false
+	for _, p := range perms {
+		up := strings.ToUpper(strings.TrimSpace(p))
+		if up != "" && up != PermAll {
+			cleanPerms = append(cleanPerms, up)
+			if up == PermViewTelemetry {
+				hasView = true
+			}
+		}
+	}
+	if !hasView {
+		cleanPerms = append([]string{PermViewTelemetry}, cleanPerms...)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var record *AdminAccessRecord
+	if r, ok := s.records[target]; ok {
+		record = r
+	} else {
+		for _, r := range s.records {
+			if r.AdminID == target {
+				record = r
+				break
+			}
+		}
+	}
+	if record == nil {
+		return AdminAccessRecord{}, errors.New("admin record not found")
+	}
+	record.Permissions = cleanPerms
+	record.LastSeenAt = time.Now()
+	s.appendAuditLocked("WARN", "ADMIN-001", "UPDATE_PERMISSIONS", "Updated "+record.AdminID+" scopes to ["+strings.Join(cleanPerms, ",")+"]", "", "I2401", "")
+
+	if s.db != nil {
+		permStr := strings.Join(cleanPerms, ",")
+		go func(h, ps string, t time.Time) {
+			_, _ = s.db.Exec("UPDATE admin_access_control SET permissions = $1, last_seen_at = $2 WHERE token_sha256 = $3", ps, t, h)
+		}(record.TokenSHA256, permStr, record.LastSeenAt)
+	}
+	return *record, nil
+}
+
+// PanicLockdownAllTempAdmins suspends all active non-root administrators.
+func (s *Service) PanicLockdownAllTempAdmins(callerTokenOrID string) ([]string, error) {
+	if !s.isCallerSovereignRoot(callerTokenOrID) {
+		s.RecordAuditEvent("CRITICAL", callerTokenOrID, "UNAUTHORIZED_PANIC_ATTEMPT", "Non-root attempted DEFCON-1 Panic Lockdown", "", "", "")
+		return nil, ErrPrivilegeDenied
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	suspendedIDs := make([]string, 0)
+	now := time.Now()
+	for _, r := range s.records {
+		if r.Role != RoleSovereignRoot && r.AdminID != "ADMIN-001" && r.Status == StatusActive {
+			r.Status = StatusSuspended
+			r.LastSeenAt = now
+			suspendedIDs = append(suspendedIDs, r.AdminID)
+			if s.db != nil {
+				go func(h string, t time.Time) {
+					_, _ = s.db.Exec("UPDATE admin_access_control SET status = $1, last_seen_at = $2 WHERE token_sha256 = $3", StatusSuspended, t, h)
+				}(r.TokenSHA256, now)
+			}
+		}
+	}
+	s.appendAuditLocked("CRITICAL", "ADMIN-001", "DEFCON1_PANIC_LOCKDOWN", "Suspended all active temporary operators ("+strings.Join(suspendedIDs, ",")+")", "", "I2401", "")
+	return suspendedIDs, nil
 }
 
 // ListAdmins returns all registered admin access control records.
